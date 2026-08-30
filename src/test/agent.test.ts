@@ -150,7 +150,7 @@ test("READONLY_TOOLS contains the expected read-only tool names", () => {
 });
 
 test("READONLY_TOOLS excludes mutating tools", () => {
-  for (const name of ["write_file", "edit_file", "delete_file", "rename_file", "run_command", "git_commit"]) {
+  for (const name of ["write_file", "edit_file", "delete_file", "delete_directory", "rename_file", "run_command", "git_commit"]) {
     assert.ok(!READONLY_TOOLS.has(name), `expected READONLY_TOOLS to exclude ${name}`);
   }
 });

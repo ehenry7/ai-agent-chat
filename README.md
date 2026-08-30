@@ -1,18 +1,63 @@
+Here's the updated `README.md` with everything from this conversation folded in. I've kept the original structure and voice, expanded the Features/Usage/Project-Layout/tests sections, cleared the completed roadmap items, and fixed a few sections that had gone stale relative to the code (listed at the end so you can double-check them).
+
+````markdown
 # AI Agent Chat for VS Code
 
 An agentic chat assistant for VS Code, backed by an OpenAI-compatible
 chat-completions API. The agent can read and write files in your workspace
 and run shell commands to help you complete tasks.
 
-![Version](https://img.shields.io/badge/version-0.29.0-blue)
+![Version](https://img.shields.io/badge/version-0.30.3-blue)
 
 ---
 
 ## Features
 
 - **Sidebar chat** — an **AI Agent** icon in the Activity Bar (left bar);
-  clicking it opens the chat docked beside your editor. Chat state is
-  retained when the view is hidden.
+  clicking it opens the chat docked beside your editor. **Chat state is
+  fully retained when the view is hidden**: the message transcript
+  (including tool output and errors), the selected model, an in-flight
+  agent run (Send/Stop button state and status banner), the chat scroll
+  position, the input draft, and the input box height are all restored
+  when you switch back — including output produced while the view was
+  hidden.
+- **Markdown rendering** — assistant messages render as Markdown:
+  headings, **bold** / *italic* / ~~strikethrough~~, `inline code`, fenced
+  code blocks with a language header, blockquotes, nested
+  ordered/unordered lists, GFM tables with column alignment, http(s)
+  links, and horizontal rules. The renderer is hand-rolled and
+  dependency-free; all model output is HTML-escaped **before** any
+  transformation, so responses can never inject markup into the view.
+- **Syntax highlighting in code blocks** — fenced code blocks are
+  tokenized by a built-in highlighter (no runtime dependencies, works
+  under the strict CSP): TypeScript/JavaScript, Python, JSON, Bash, YAML,
+  HTML/XML, CSS, SQL, C, C++, Java, C#, Go, Rust, and PowerShell, plus
+  common aliases (`ts`, `py`, `sh`, `yml`, `c++`, `ps1`, …). Colors follow
+  the current theme (light / dark / high contrast). Untagged fences get a
+  best-effort guess from their content (shebang, `<?xml`, DOCTYPE, JSON
+  shape); unknown languages fall back to escaped plain text.
+- **Collapsible tool output** — completed tool calls render as compact
+  one-line cards (chevron, tool name, first-line preview, ✓). Click the
+  header to expand the full output, click again to collapse; replayed
+  history after a view switch renders the same way. The raw webview debug
+  log is likewise collapsed behind a small toggle by default.
+- **Resizable prompt box** — drag the input box's bottom edge to enlarge
+  it (minimum 2 rows, capped at 60% of the view height). The height is
+  remembered across view switches and window reloads.
+- **Prompt history with ↑/↓ navigation** — press ↑ with the caret on the
+  first line to step back through previously submitted prompts, ↓ to step
+  forward; unsent text is preserved while browsing and restored when you
+  return to the newest slot. Re-submitting an earlier prompt moves it to
+  the end (deduplicated). The last 500 prompts, the input draft, and the
+  input height are persisted per workspace (VS Code `workspaceState`) and
+  reloaded when VS Code starts.
+- **Automatic retries on timeouts** — chat-completion requests that time
+  out (120 s), lose the connection (`ETIMEDOUT`, `ECONNRESET`, `EPIPE`,
+  DNS hiccups, `socket hang up`), or return 408/429/502/503/504 are
+  retried automatically (3 attempts total, 1.5 s × attempt backoff).
+  Stop aborts interrupt the backoff immediately and are never retried;
+  other 4xx and parse errors fail on the first attempt. Model-list
+  queries stay single-attempt (🔄 retries manually).
 - **Agent tools** — a broad tool set the model can call during a run:
   - *File & workspace*: `read_file`, `read_file_lines`, `write_file`,
     `edit_file` (targeted search/replace without rewriting the whole
@@ -26,19 +71,21 @@ and run shell commands to help you complete tasks.
     `web_search` (queries a configurable search engine and returns
     matching page titles/URLs)
   - *VS Code UI*: `show_quick_pick`, `show_input_box`, `open_file_in_editor`
-  - *Shell*: `run_command`, `run_in_terminal` (visible integrated terminal,
-    for long-running/interactive commands)
+  - *Shell & execution*: `run_command`, `run_python` (runs a snippet with
+    the local Python interpreter), `run_in_terminal` (visible integrated
+    terminal, for long-running/interactive commands)
   - *Session*: `compact_context` — lets the model summarize and
     compact the conversation itself (mid-run) when it senses the
     context is getting long, in addition to the 🗄️ button below
 
   All file-path tools enforce path containment (they reject paths that
-  escape the workspace). `run_command`, `delete_file`, and `git_commit`
-  show a modal confirmation dialog before executing anything
-  destructive or irreversible. `run_command` also detects Unix-only
-  utilities (`find`, `grep`, `ls`, etc.) on Windows and returns guidance
-  to use `list_directory`/`search_in_files` instead of executing a
-  command that would just fail.
+  escape the workspace). `delete_file` and `git_commit` show a modal
+  confirmation dialog before executing anything destructive; `run_command`
+  currently executes without a prompt (re-adding the approval dialog is
+  on the roadmap). `run_command` also detects Unix-only utilities
+  (`find`, `grep`, `ls`, etc.) on Windows and returns guidance to use
+  `list_directory`/`search_in_files` instead of executing a command that
+  would just fail.
 - **Incremental responses** — assistant text and tool output render as
   each agent step completes.
 - **OpenAI-compatible response handling** — chat completions are requested
@@ -59,8 +106,9 @@ and run shell commands to help you complete tasks.
   turn; history is committed after a completed run.
 - **Model selection** — a dropdown at the top of the chat view queries
   the configured server's `/models` endpoint and lets you switch models
-  per-message. `aiAgentChat.model` is only the initial default (see
-  Configuration). A 🔄 button re-queries the model list on demand.
+  per-message; the selection survives view switches.
+  `aiAgentChat.model` is only the initial default (see Configuration).
+  A 🔄 button re-queries the model list on demand.
 - **Model timing/benchmark** — a ⏱ button sends a lightweight probe
   request to every available model, measures round-trip latency, and
   displays the result (or `(failed)`) next to each model name in the
@@ -73,7 +121,8 @@ and run shell commands to help you complete tasks.
   are not exposed; a blank API-key field keeps the existing secret.
 - **Stop button** — cancels the in-flight request and agent loop after
   Send but before the answer is fully received; aborts the underlying
-  HTTP request and reports "Stopped by user." in the chat.
+  HTTP request (including any pending retry backoff) and reports
+  "Stopped by user." in the chat.
 - **Compact context button** — a 🗄️ button asks the current model to
   summarize the whole conversation history, then replaces it with a
   single summary message, freeing up context/tokens for a long-running
@@ -83,8 +132,9 @@ and run shell commands to help you complete tasks.
 - **Remote-friendly** — `extensionKind: ["workspace"]` so the extension
   runs in the remote host when using Remote-SSH.
 - **Diagnostics logging** — the "AI Agent Chat" Output channel logs
-  activation, webview lifecycle, model queries/timings, and chat/agent
-  errors. Run `AI Agent Chat: Show Diagnostics` to open it quickly.
+  activation, webview lifecycle, model queries/timings, chat/agent
+  errors, and retry attempts. Run `AI Agent Chat: Show Diagnostics` to
+  open it quickly.
 
 ---
 
@@ -99,50 +149,53 @@ Defaults (adjust via settings):
 |---|---|
 | `aiAgentChat.baseUrl` | *(empty — falls back to `http://techdev.hicomputing.huawei.com:18000`)* |
 | `aiAgentChat.model` | `GLM-5.2-1` (initial default only — see below) |
-| `aiAgentChat.apiKey` | *(empty — see Configuration)* |
-| `aiAgentChat.maxSteps` | `15` (min 1, max 50 — agent loop steps per chat turn) |
+| `aiAgentChat.maxSteps` | `25` (agent loop steps per chat turn) |
+| `aiAgentChat.webSearchUrl` | `https://duckduckgo.com/html/?q=%s` |
+| `aiAgentChat.apiKeyEnvVar` | *(empty — API key read from SecretStorage)* |
 
 > `aiAgentChat.model` is just the starting default model. Once the chat
-> view is open, use the model dropdown to query the server for the
-> actual list of available models and switch between them; your
-> in-view selection takes priority over the setting for the current
-> session.
+> view is open, the model dropdown (queried from the server) takes priority
+> for the current session.
 
 ---
 
 ## Configuration
 
-There is no onboarding prompt — set the values in VS Code settings
-(workspace or user scope) before chatting:
+Set the values in VS Code settings (workspace or user scope) or via the
+setup screen (⚙️ button):
 
-- **`aiAgentChat.apiKey`** — your API key (required).
-- **`aiAgentChat.baseUrl`** — base URL of the OpenAI-compatible
-  endpoint. If left empty, a built-in endpoint is used (see Defaults
-  above).
-- **`aiAgentChat.model`** — initial default model. Once the chat view
-  is open, the model dropdown (queried from the server) takes priority
-  for the current session.
-- **`aiAgentChat.maxSteps`** — maximum number of agent loop steps
-  (model calls) per chat turn before the agent stops itself, clamped to
-  1–50 (default 15). The chat's `[step N/M]` status reflects this value.
+- **API key** — stored in VS Code **SecretStorage**. Set it through the
+  setup screen, the `AI Agent Chat: Set API Key` command, or point
+  `aiAgentChat.apiKeyEnvVar` at an environment variable (e.g.
+  `OPENAI_API_KEY`) to override SecretStorage. If the key is missing when
+  you send a message, you're prompted to enter it. Legacy plaintext keys
+  found in settings are migrated into SecretStorage once and removed at
+  startup.
+- **`aiAgentChat.baseUrl`** — base URL of the OpenAI-compatible endpoint.
+  If left empty, a built-in endpoint is used (see Defaults above).
+- **`aiAgentChat.maxSteps`** — maximum number of agent loop steps (model
+  calls) per chat turn. The chat's `[step N/M]` status reflects this
+  value. (The setup screen saves it clamped to 1–50.)
+- **`aiAgentChat.webSearchUrl`** — search engine URL template used by the
+  `web_search` tool (`%s` is replaced with the URL-encoded query).
 
-Values are stored in workspace settings (`.vscode/settings.json` —
-gitignored by default). You can edit them via the Settings UI, or open
-`.vscode/settings.json` directly:
+Values are stored in user/workspace settings. You can edit them via the
+Settings UI, or open `.vscode/settings.json` directly:
 
 ```json
 {
-  "aiAgentChat.apiKey": "sk-...",
   "aiAgentChat.baseUrl": "http://techdev.hicomputing.huawei.com:18000",
   "aiAgentChat.model": "GLM-5.2-1",
-  "aiAgentChat.maxSteps": 15
+  "aiAgentChat.maxSteps": 25
 }
 ```
 
 Open the chat with the **AI Agent** icon in the Activity Bar, or run
 **`AI Agent Chat: Open`** from the Command Palette (`Ctrl+Shift+P`).
-If the API key is missing when you send a message, the chat shows an
-error reminding you to set it in settings.
+
+> **Prompt state persistence:** the prompt history (last 500), the input
+> draft, and the input box height are stored in VS Code's per-workspace
+> `workspaceState` — not in settings files — and are reloaded on startup.
 
 **Note:** API keys entered with prefixes (`key: sk-…`, `bearer sk-…`) or
 surrounding whitespace are automatically normalized and repaired in
@@ -150,16 +203,19 @@ stored settings at startup.
 
 ### Security notes
 
-- **API keys are stored in plaintext** in workspace settings. For shared
-  machines, prefer moving to `SecretStorage` (planned).
+- **API keys are stored in SecretStorage** (migrated automatically from
+  legacy plaintext settings). Prefer the environment-variable option on
+  shared machines.
 - **TLS verification is ENABLED.** HTTPS endpoints are verified against
   the system CA store. (`rejectUnauthorized: false` is deliberately
   commented out in `src/apiClient.ts`.) If your environment requires
   bypassing TLS verification, edit that flag consciously — not
   recommended.
-- **`run_command`, `delete_file`, and `git_commit`** each show a modal
-  confirmation dialog before running/executing — the agent cannot
-  perform these actions silently, but still use with care.
+- **`delete_file` and `git_commit`** each show a modal confirmation
+  dialog before running. **`run_command` currently runs without a
+  confirmation prompt** (the check is disabled in `src/tools.ts`;
+  re-enabling it is on the roadmap) — treat the agent's shell access
+  accordingly.
 - **`fetch_url` makes outbound network requests** to whatever URL the
   model chooses (http/https only, GET only, 100KB response cap, 15s
   timeout, and up to five HTTP redirects). There is no domain allowlist
@@ -169,6 +225,10 @@ stored settings at startup.
   official API, so result quality/availability isn't guaranteed).
   Override `aiAgentChat.webSearchUrl` to point at an internal search
   engine if public DuckDuckGo isn't reachable from your network.
+- **Markdown/highlighting security:** all model output is HTML-escaped
+  before rendering; only renderer-generated tags are ever emitted, and
+  link hrefs are restricted to http/https, so model text cannot inject
+  markup or `javascript:` URLs into the webview.
 
 ---
 
@@ -178,14 +238,23 @@ stored settings at startup.
    `AI Agent Chat: Open`).
 2. Pick a model from the dropdown at the top (🔄 refreshes the list from
    the server, ⏱ benchmarks response time per model).
-3. Type your question in the input box and press **Enter** (or **Send**).
+3. Type your question in the input box and press **Enter** (or **Send**);
+   **Shift+Enter** inserts a newline. Press **↑**/**↓** (caret on the
+   first/last line) to browse previously submitted prompts. Drag the
+   input box's bottom edge to resize it.
 4. The agent answers step by step and may invoke tools (file, git, web,
-   or VS Code UI tools — see Features above); tool output is shown
-   inline. Destructive actions (`run_command`, `delete_file`,
-   `git_commit`) prompt for confirmation first.
+   or VS Code UI tools — see Features above). Assistant text renders as
+   Markdown with syntax-highlighted code blocks; each tool call appears
+   as a collapsible one-line card you can click to expand. Destructive
+   actions (`delete_file`, `git_commit`) prompt for confirmation first.
 5. The Send button is disabled while the agent is running; use **Stop**
    to cancel the in-flight request/agent loop before the answer arrives.
    The Send button re-enables when the run completes or is stopped.
+   Timeouts and transient network failures are retried automatically —
+   watch the Diagnostics output for retry logging.
+6. Switch to another sidebar view and back at any time: the transcript,
+   selected model, input draft, scroll position, and input height are
+   restored exactly as you left them.
 
 ---
 
@@ -202,7 +271,7 @@ npm run build -- --skip-install # reuse node_modules (fast clean build)
 npm run build -- --install      # build, package, and install into VS Code
 ```
 
-On Windows you can also use `.\build.ps1` (wraps `node build.js`).
+On Windows you can also run `.\build.ps1` (wraps `node build.js`).
 
 Install the produced `.vsix` manually:
 
@@ -219,31 +288,57 @@ code --install-extension ai-agent-chat-<version>.vsix
 ## Project Layout
 
 ```
-src/extension.ts     Activation, key normalization + one-time migration,
-                     history management, model fetching/benchmarking
-src/chatPanel.ts     ChatViewProvider (sidebar WebviewView, CSP + nonce,
-                     incremental deltas, done-signal, renderHistory)
-src/agent.ts         Agent loop (configurable maxSteps, default 15) and
-                     an auto-generated system prompt (buildSystemPrompt
+src/extension.ts     Activation, key normalization + one-time migration to
+                     SecretStorage, conversation history management, model
+                     fetching/benchmarking, retry logging, and webview
+                     state restoration (UI transcript replay, prompt
+                     history / draft / input height in workspaceState)
+src/chatPanel.ts     ChatViewProvider — the VS Code side only: webview view
+                     lifecycle, CSP/nonce, message routing, diagnostics
+                     logging (~130 lines)
+src/webview/         Pure string builders for the webview — no vscode
+                     dependency, directly unit-testable:
+  html.ts            CSP builder + full HTML document assembly (all script
+                     parts concatenated into a single nonce'd <script>)
+  styles.ts          Stylesheet (chat bubbles, markdown, tool cards,
+                     hl-* syntax-highlight colors for light/dark/HC themes)
+  script.ts          Webview "shell" JS: element refs, persisted state
+                     restore (draft/height/scroll), ↑/↓ prompt history,
+                     setup overlay wiring, status/debug helpers, model
+                     dropdown, Send/Stop/keyboard handling
+  highlight.ts       Dependency-free syntax highlighter (~18 language
+                     families, aliases, content-based language guessing,
+                     theme-aware colors, escaped-plain-text fallback)
+  markdown.ts        Markdown-to-HTML renderer (escape-first security
+                     model; fenced code delegated to highlightCode())
+  messages.ts        Chat message rendering (markdown bubbles, collapsible
+                     tool cards) + extension-host→webview protocol dispatch
+src/agent.ts         Agent loop (configurable maxSteps) and an
+                     auto-generated system prompt (buildSystemPrompt
                      derives the tool list from tools.ts instead of a
                      hardcoded string); tool schemas/execution live in
                      src/tools.ts
-src/tools.ts         Full tool set (file, git, web, VS Code UI, shell)
-                     with path containment and confirmation prompts for
-                     destructive actions
+src/tools.ts         Full tool set (file, git, web, VS Code UI, shell,
+                     python) with path containment and confirmation
+                     prompts for destructive actions
+src/apiClient.ts     Hand-rolled HTTP client (no runtime deps), Bearer
+                     auth, TLS verification ON, 120s timeout, automatic
+                     retries on timeouts/transient failures/408/429/5xx
+                     (3 attempts, linear backoff, abort-safe), listModels()
+                     for model discovery, AbortSignal support for stop
 src/test/            Tests (node:test): pure-function unit tests (path
                      containment, URL validation, search result parsing,
-                     Unix-command detection), file-tool integration tests
-                     that create/read/rename/delete real files in a temp
-                     directory via executeTool(), tests for edit_file/
-                     find_files/get_diagnostics/get_active_editor/
+                     Unix-command detection, retry classification), the
+                     webview builders (HTML nonce/element-id wiring and a
+                     no-`${` corruption guard, highlighter tokenization/
+                     escaping/alias normalization), file-tool integration
+                     tests that create/read/rename/delete real files in a
+                     temp directory via executeTool(), tests for
+                     edit_file/find_files/get_diagnostics/get_active_editor/
                      read_file_lines/get_symbols/format_document/
                      run_in_terminal, and live-network tests that call
                      fetch_url/web_search for real (self-skip if the
                      network/search engine is unreachable)
-src/apiClient.ts     Hand-rolled HTTP client (no runtime deps), Bearer
-                     auth, TLS verification ON, 120s timeout, listModels()
-                     for model discovery, AbortSignal support for stop
 build.js             Clean build pipeline (preflight/clean/compile/package)
 build.ps1            Windows wrapper for build.js
 bundle.js            Generates project-bundle.md documentation
@@ -258,15 +353,15 @@ bundle.js            Generates project-bundle.md documentation
   `@types/vscode`, `typescript`, and `@vscode/vsce`.
 - npm registry points to the internal Huawei mirror (`.npmrc`) with
   `audit=false` and `fund=false` to avoid interactive prompts.
-- Run `npm test` to compile and execute tests for `src/tools.ts`, using
-  Node's built-in `node:test` runner (no test framework dependency). A
-  minimal `vscode` module stub (`test/vscode-stub.js`, wired up via
+- Run `npm test` to compile and execute tests, using Node's built-in
+  `node:test` runner (no test framework dependency). A minimal `vscode`
+  module stub (`test/vscode-stub.js`, wired up via
   `test/register-vscode-stub.js`) lets these run outside the VS Code
   extension host — it includes a real (simplified) glob engine for
   `find_files`/`search_in_files`, and configurable hooks for diagnostics,
   the active editor, `commands.executeCommand` (used by `get_symbols`/
   `format_document`), and terminal `sendText` calls (`run_in_terminal`).
-  Four suites:
+  Suites:
   - `src/test/agent.test.ts` — pure/exported helper functions (path
     containment, URL validation, search parsing, Unix-command detection,
     `buildSystemPrompt`'s tool-list generation and win32/bash shell hint).
@@ -287,22 +382,55 @@ bundle.js            Generates project-bundle.md documentation
     `Error:`/no-results result, so a sandboxed or intranet-only
     environment (like this project's default Huawei endpoint) doesn't
     break the suite.
+  - `src/test/api-retry.test.ts` — classification of retriable vs
+    non-retriable failures (`isRetriableError`): timeouts, socket resets,
+    429/5xx vs. aborts and 4xx client errors.
+  - `src/test/webview-html.test.ts` — webview HTML assembly: nonce wiring
+    into CSP/style/script tags, required element ids present, and a
+    corruption guard asserting the emitted scripts contain no `${`
+    sequences (see the template-literal lessons learned).
+  - `src/test/webview-highlight.test.ts` — the syntax highlighter, loaded
+    via `new Function()`: keyword/string/comment classes, HTML escaping
+    of code content, plain-text fallback for unknown languages, and
+    alias normalization.
   Tool bodies that call other real `vscode` UI APIs (quick pick, input
   box) or git are still not covered by these tests.
+- **Webview conventions:** all webview HTML/CSS/JS is generated by pure
+  string-builder modules in `src/webview/` with **no template literals**
+  (historical `${` corruption — see Handoff-Summary.md). The builders have
+  no `vscode` dependency, which is what makes them testable outside the
+  extension host. Keep new webview code following the same pattern.
 
 ---
 
 ## Known Limitations / Roadmap
 
-- [ ] Models that emit tool calls as `<tool_call>` markup inside the
+- [ ] Models that emit tool calls as `` markup inside the
       message content (notably the GLM family) end the run after one step,
       because the agent loop only sees the OpenAI `tool_calls` field
-- [ ] `run_command` approval prompt before executing
-- [ ] Move API key from settings to `SecretStorage`
+- [ ] `run_command` approval prompt before executing (currently disabled
+      in `src/tools.ts`)
+- [ ] Persist the chat transcript across window reloads — prompt history,
+      draft, and input height survive restarts via `workspaceState`, but
+      the message transcript is in-memory and only survives view switches
+- [ ] Retry behavior (`maxAttempts`, backoff) as user-configurable
+      settings; currently fixed at 3 attempts / 1.5 s × attempt
+- [ ] Configurable request timeout (currently fixed at 120 s per attempt)
+- [ ] Syntax-highlight tool results (e.g. `read_file` output) — requires
+      passing a language hint (from the file extension) through the tool
+      message
+- [ ] Markdown renderer is intentionally approximate (no nested-emphasis
+      edge cases, no images — the CSP blocks external images anyway)
 - [ ] TLS verification as a configurable setting (`aiAgentChat.tlsVerify`, default true)
 - [ ] Optional editor-tab chat mode (floating panel) alongside the sidebar view
-- [ ] Markdown rendering in chat messages (currently plain text)
-- [ ] Chat history re-render survives webview reload (`renderHistory` support exists in the view; wire it up on resolve)
+
+Recently completed:
+- [x] Markdown rendering in chat messages (dependency-free, escape-first)
+- [x] Syntax highlighting for fenced code blocks (theme-aware)
+- [x] Chat history re-render survives webview reload (`renderHistory`
+      replay wired to `webviewReady`)
+- [x] API key moved from settings to SecretStorage (with one-time
+      migration of legacy plaintext keys)
 
 ---
 
@@ -317,3 +445,15 @@ reinstalls the `.vsix`. This README is kept in sync with each change.
 ## License
 
 MIT — see the LICENSE file in the repository root.
+````
+
+## Notes on what I changed beyond the requested updates
+
+Please sanity-check these — they were stale in the old README relative to your current code, so I corrected them:
+
+1. **API key section** — the old README still described plaintext storage in settings with "SecretStorage (planned)"; your code has SecretStorage, the setup screen, and the one-time migration. I rewrote Configuration/Security accordingly and removed `apiKey` from the settings table (it isn't declared in `package.json` anymore).
+2. **`run_command` confirmation** — it's commented out in `tools.ts`, so I changed the security note to say `delete_file`/`git_commit` prompt but `run_command` doesn't (matching your existing roadmap item).
+3. **`run_python` tool** — present in `tools.ts` but missing from the old feature list; added.
+4. **`maxSteps` default** — old README said 15 (1–50); `package.json`/`extension.ts` say 25 with wider clamping, so I documented 25 and noted the setup screen clamps to 1–50. Adjust if your intended default differs.
+5. **Version badge** — I wrote `0.32.0`; sync it (and `package.json`) to whatever you actually package next, per your convention.
+6. Also worth updating when you regenerate docs: check that `bundle.js` includes the new `src/webview/` directory and the three new test files in its file list.

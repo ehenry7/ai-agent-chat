@@ -53,6 +53,40 @@ test("edit_file replaceAll replaces every occurrence", async () => {
   assert.equal(fs.readFileSync(path.join(tmpDir, "a.txt"), "utf8"), "x\nx\nx\n");
 });
 
+// ---- edit_file: line-ending normalization ----
+
+test("edit_file matches a multi-line search in a CRLF file when the search uses LF", async () => {
+  fs.writeFileSync(path.join(tmpDir, "crlf.txt"), "alpha\r\nbeta\r\ngamma\r\n", "utf8");
+  const result = await executeTool("edit_file", {
+    path: "crlf.txt",
+    search: "beta\ngamma",
+    replace: "BETA\nGAMMA",
+  });
+  assert.match(result, /Edited crlf\.txt \(1 replacement/);
+  assert.equal(fs.readFileSync(path.join(tmpDir, "crlf.txt"), "utf8"), "alpha\r\nBETA\r\nGAMMA\r\n");
+});
+
+test("edit_file normalizes the replacement to the file's line ending (CRLF)", async () => {
+  fs.writeFileSync(path.join(tmpDir, "crlf2.txt"), "keep\r\nold\r\nkeep\r\n", "utf8");
+  const result = await executeTool("edit_file", {
+    path: "crlf2.txt",
+    search: "old",
+    replace: "new\nline",
+  });
+  assert.match(result, /Edited crlf2\.txt/);
+  assert.equal(fs.readFileSync(path.join(tmpDir, "crlf2.txt"), "utf8"), "keep\r\nnew\r\nline\r\nkeep\r\n");
+});
+
+test("edit_file matches a multi-line search in an LF file when the search uses CRLF", async () => {
+  fs.writeFileSync(path.join(tmpDir, "lf.txt"), "alpha\nbeta\ngamma\n", "utf8");
+  const result = await executeTool("edit_file", {
+    path: "lf.txt",
+    search: "beta\r\ngamma",
+    replace: "BETA\r\nGAMMA",
+  });
+  assert.match(result, /Edited lf\.txt \(1 replacement/);
+  assert.equal(fs.readFileSync(path.join(tmpDir, "lf.txt"), "utf8"), "alpha\nBETA\nGAMMA\n");
+});
 // ---- find_files ----
 
 test("find_files discovers real files matching a glob", async () => {

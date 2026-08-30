@@ -6,6 +6,12 @@ export interface ApiConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  /** Total attempts per chat() call for retriable errors. Default 3 (2 retries). */
+  maxAttempts?: number;
+  /** Base backoff in ms between retries; actual delay is retryDelayMs * attempt. Default 1500. */
+  retryDelayMs?: number;
+  /** Optional callback fired before each retry (e.g. for logging). */
+  onRetry?: (info: { attempt: number; maxAttempts: number; error: string; delayMs: number }) => void;
 }
 
 export interface ChatMessage {
@@ -23,10 +29,75 @@ interface ChatResponse {
   choices: ChatChoice[];
 }
 
+/**
+ * Decides whether a failed chat attempt is worth retrying: timeouts, dropped
+ * sockets, DNS hiccups, and rate-limit/gateway statuses. User aborts and
+ * other 4xx client errors are never retried. Exported for unit testing.
+ */
+export function isRetriableError(err: unknown): boolean {
+  const e = err as any;
+  const retriableCodes = ["ETIMEDOUT", "ECONNRESET", "EPIPE", "EAI_AGAIN", "ENOTFOUND"];
+  if (e && typeof e.code === "string" && retriableCodes.includes(e.code)) {
+    return true;
+  }
+  const msg = String(e?.message ?? err ?? "");
+  if (msg.includes("Aborted")) {
+    return false;
+  }
+  if (msg.includes("timed out")) {
+    return true; // our own "API request timed out" guard and transport timeouts
+  }
+  if (msg.includes("socket hang up")) {
+    return true;
+  }
+  const statusMatch = msg.match(/API error (\d{3})/);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
+  }
+  return false;
+}
+
 export class ApiClient {
   constructor(private cfg: ApiConfig) {}
 
+  /**
+   * Chat completion with retry: timeouts and transient failures are retried
+   * up to maxAttempts (default 3). User aborts are never retried.
+   */
   async chat(messages: ChatMessage[], tools?: any[], signal?: AbortSignal): Promise<ChatMessage> {
+    const maxAttempts = Math.max(1, this.cfg.maxAttempts ?? 3);
+    const baseDelay = this.cfg.retryDelayMs ?? 1500;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.chatOnce(messages, tools, signal);
+      } catch (err) {
+        lastError = err;
+        const aborted = Boolean(signal?.aborted) || String((err as any)?.message ?? err).includes("Aborted");
+        if (aborted || attempt >= maxAttempts || !isRetriableError(err)) {
+          throw err;
+        }
+        const delayMs = baseDelay * attempt;
+        if (this.cfg.onRetry) {
+          this.cfg.onRetry({ attempt, maxAttempts, error: String((err as any)?.message ?? err), delayMs });
+        }
+        // Sleep, but wake up immediately if the user hits Stop.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(finish, delayMs);
+          function finish(): void {
+            clearTimeout(timer);
+            signal?.removeEventListener("abort", finish);
+            resolve();
+          }
+          signal?.addEventListener("abort", finish, { once: true });
+        });
+      }
+    }
+    throw lastError; // unreachable: the loop always returns or throws
+  }
+
+  private async chatOnce(messages: ChatMessage[], tools?: any[], signal?: AbortSignal): Promise<ChatMessage> {
     const url = this.buildUrl();
     const isHttps = url.protocol === "https:";
     const transport = isHttps ? https : http;

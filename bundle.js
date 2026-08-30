@@ -4,25 +4,39 @@ var fs = require("fs");
 var path = require("path");
 
 var ROOT = process.cwd();
-var SOFT_LIMIT = 85000;  // start a new part once we pass this (buffer under 80K)
+var SOFT_LIMIT = 40000;  // start a new part once we pass this (buffer under 80K)
 
-var FILES = [
+// Top-level files bundled in a fixed, deliberate order.
+var TOP_LEVEL_FILES = [
   "package.json",
   "tsconfig.json",
-  "README.md",
-  "src/extension.ts",
-  "src/chatPanel.ts",
-  "src/agent.ts",
-  "src/apiClient.ts",
-  "media/chat-icon-dark.svg",
-  "media/chat-icon-light.svg",
-  ".vscodeignore",
-  ".gitignore",
-  ".npmrc",
-  "LICENSE",
-  "build.js",
-  "build.ps1"
+  "README.md"
 ];
+
+// Everything under src/ is discovered automatically (recursive), so adding a
+// new source file no longer requires editing this list.
+var SCAN_ROOT = "src";
+var SKIP_DIRS = ["test"];     // skip src/test (and any nested dir named test)
+var SKIP_SUFFIXES = [".bak"]; // skip backups like src/apiClient.ts.bak
+
+function scanDir(dir) {
+  var found = [];
+  fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
+    if (e.isDirectory()) {
+      if (SKIP_DIRS.indexOf(e.name) !== -1) { return; }
+      found = found.concat(scanDir(path.join(dir, e.name)));
+    } else if (e.isFile()) {
+      if (SKIP_SUFFIXES.some(function (s) { return e.name.slice(-s.length) === s; })) { return; }
+      // Normalise to forward slashes so paths match on Windows and Unix.
+      found.push(path.relative(ROOT, path.join(dir, e.name)).replace(/\\/g, "/"));
+    }
+  });
+  return found;
+}
+
+var srcFiles = scanDir(path.join(ROOT, SCAN_ROOT)).sort();
+console.log("Scanned " + SCAN_ROOT + "/ -> " + srcFiles.length + " file(s): " + srcFiles.join(", "));
+var FILES = TOP_LEVEL_FILES.concat(srcFiles);
 
 var parts = [];   // array of strings
 var current = "";

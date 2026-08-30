@@ -194,11 +194,26 @@ export const tools = [
     type: "function",
     function: {
       name: "delete_file",
-      description: "Delete a file (or empty directory) in the workspace. Requires user confirmation.",
+      description: "Delete a file in the workspace. This is for files only, not directories; use delete_directory for directories. Requires user confirmation.",
       parameters: {
         type: "object",
         properties: {
           path: { type: "string", description: "Relative path in the workspace" },
+        },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_directory",
+      description: "Delete a directory in the workspace. Supports recursive deletion of non-empty directories. Requires user confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Relative path in the workspace" },
+          recursive: { type: "boolean", description: "Recursively delete the directory and all of its contents, allowing non-empty directories (default: true). When false, the directory must be empty." },
         },
         required: ["path"],
       },
@@ -706,7 +721,18 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
           return "Error: search is required";
         }
         const content = fs.readFileSync(abs, "utf8");
-        const count = content.split(search).length - 1;
+        // Normalize line endings in the search/replace strings to match the
+        // file's dominant line ending (CRLF on Windows, LF on Unix). Without
+        // this, a CRLF file never matches an LF search string and the tool
+        // reports "search text not found" even when the visible text is identical.
+        const crlf = (content.match(/\r\n/g) || []).length;
+        const lf = (content.match(/\n/g) || []).length - crlf;
+        const fileIsCrlf = crlf > lf;
+        const norm = (s: string): string =>
+          fileIsCrlf ? s.replace(/\r?\n/g, "\r\n") : s.replace(/\r\n/g, "\n");
+        const searchNorm = norm(search);
+        const replaceNorm = norm(replace);
+        const count = content.split(searchNorm).length - 1;
         if (count === 0) {
           return `Error: search text not found in ${args.path}`;
         }
@@ -714,7 +740,9 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
           return `Error: search text matches ${count} locations in ${args.path}; ` +
             `include more surrounding context to make it unique, or set replaceAll: true`;
         }
-        const updated = args.replaceAll ? content.split(search).join(replace) : content.replace(search, replace);
+        const updated = args.replaceAll
+          ? content.split(searchNorm).join(replaceNorm)
+          : content.replace(searchNorm, replaceNorm);
         fs.writeFileSync(abs, updated, "utf8");
         return `Edited ${args.path} (${args.replaceAll ? count : 1} replacement(s))`;
       }
@@ -835,8 +863,17 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
       }
       case "delete_file": {
         const abs = resolveInWorkspace(String(args.path));
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          return `Error: path not found: ${args.path}`;
+        }
+        if (stat.isDirectory()) {
+          return `Error: ${args.path} is a directory. Use the delete_directory tool to delete directories.`;
+        }
         const choice = await vscode.window.showWarningMessage(
-          `Allow the agent to delete this path?\n\n${args.path}`,
+          `Allow the agent to delete this file?\n\n${args.path}`,
           { modal: true },
           "Delete"
         );
@@ -845,6 +882,35 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
         }
         fs.rmSync(abs, { recursive: false });
         return `Deleted ${args.path}`;
+      }
+      case "delete_directory": {
+        const abs = resolveInWorkspace(String(args.path));
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(abs);
+        } catch {
+          return `Error: path not found: ${args.path}`;
+        }
+        if (!stat.isDirectory()) {
+          return `Error: ${args.path} is not a directory. Use the delete_file tool to delete files.`;
+        }
+        const recursive = args.recursive === undefined ? true : Boolean(args.recursive);
+        const choice = await vscode.window.showWarningMessage(
+          recursive
+            ? `Allow the agent to delete this directory and ALL of its contents?\n\n${args.path}`
+            : `Allow the agent to delete this directory?\n\n${args.path}`,
+          { modal: true },
+          "Delete"
+        );
+        if (choice !== "Delete") {
+          return "Delete cancelled by user.";
+        }
+        if (recursive) {
+          fs.rmSync(abs, { recursive: true });
+        } else {
+          fs.rmdirSync(abs); // removes only an empty directory; throws ENOTEMPTY otherwise
+        }
+        return `Deleted ${args.path}${recursive ? " (recursive)" : ""}`;
       }
       case "rename_file": {
         const fromAbs = resolveInWorkspace(String(args.oldPath));

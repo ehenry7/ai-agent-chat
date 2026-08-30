@@ -108,6 +108,82 @@ export async function activate(context: vscode.ExtensionContext) {
     const panel = new ChatViewProvider(context);
     out.appendLine("[activate] provider created");
 
+    // ---- UI transcript (webview state restoration) ----
+    // VS Code destroys a WebviewView's DOM whenever the view is hidden (e.g.
+    // switching to another sidebar view) and re-runs resolveWebviewView when it
+    // becomes visible again. There is no retainContextWhenHidden for views, so
+    // everything the chat has shown is recorded here and replayed via
+    // 'renderHistory' whenever the webview reports readiness. This also captures
+    // output produced while the view was hidden.
+    const uiLog: Array<{ role: string; text: string }> = [];
+    let cachedModels: string[] = []; // last known model list, for instant restore
+
+    /**
+     * Post a chat message to the webview AND record it in uiLog so it can be
+     * replayed after the webview is reloaded. Roles mirror the webview's
+     * addMessage() roles: "user", "assistant", "tool", "error".
+     */
+    function recordAndPost(type: "delta" | "tool" | "error", text: string): void {
+        uiLog.push({ role: type === "delta" ? "assistant" : type, text });
+        panel.postMessage({ type, text });
+    }
+
+    // ---- Persisted prompt state: draft, input height, prompt history ----
+    // Stored in workspaceState so it survives VS Code restarts, and mirrored
+    // into the webview whenever the view is (re)created. The webview also keeps
+    // its own copy via vscode.getState(); on webviewReady the freshest of the
+    // two wins, and the extension-host copy acts as a fallback.
+    const PROMPT_HISTORY_KEY = "aiAgentChat.promptHistory";
+    const PROMPT_DRAFT_KEY = "aiAgentChat.promptDraft";
+    const INPUT_HEIGHT_KEY = "aiAgentChat.inputHeight";
+    const MAX_PROMPT_HISTORY = 500;
+
+    let promptHistory: string[] = [];
+    let currentDraft = "";
+    let inputHeight = 0;
+
+    try {
+        const loadedHistory = context.workspaceState.get<string[]>(PROMPT_HISTORY_KEY, []);
+        if (Array.isArray(loadedHistory)) {
+            promptHistory = loadedHistory.filter((s) => typeof s === "string").slice(-MAX_PROMPT_HISTORY);
+        }
+        currentDraft = context.workspaceState.get<string>(PROMPT_DRAFT_KEY, "") || "";
+        const storedHeight = context.workspaceState.get<number>(INPUT_HEIGHT_KEY, 0);
+        if (typeof storedHeight === "number" && storedHeight > 0) {
+            inputHeight = storedHeight;
+        }
+        out.appendLine("[activate] prompt history loaded: " + promptHistory.length + " entries" +
+            (currentDraft ? " (draft present)" : "") +
+            (inputHeight ? " (inputHeight=" + inputHeight + ")" : ""));
+    } catch (e) {
+        out.appendLine("[activate] prompt state load failed: " + String(e));
+    }
+
+    async function persistPromptState(): Promise<void> {
+        try {
+            await context.workspaceState.update(PROMPT_HISTORY_KEY, promptHistory.slice(-MAX_PROMPT_HISTORY));
+            await context.workspaceState.update(PROMPT_DRAFT_KEY, currentDraft);
+            await context.workspaceState.update(INPUT_HEIGHT_KEY, inputHeight);
+        } catch (e) {
+            out.appendLine("[state] persist prompt state failed: " + String(e));
+        }
+    }
+
+    /** Append a submitted prompt to the persisted history (deduped, newest last). */
+    function recordPrompt(text: string): void {
+        if (!text) {
+            return;
+        }
+        const dupIdx = promptHistory.indexOf(text);
+        if (dupIdx !== -1) {
+            promptHistory.splice(dupIdx, 1);
+        }
+        promptHistory.push(text);
+        if (promptHistory.length > MAX_PROMPT_HISTORY) {
+            promptHistory = promptHistory.slice(-MAX_PROMPT_HISTORY);
+        }
+    }
+
     // Register the setup message handler exactly once (not per welcome-screen show),
     // so the ⚙️ button works for returning users and handlers don't accumulate.
     registerSetupHandler(context, panel);
@@ -124,7 +200,7 @@ export async function activate(context: vscode.ExtensionContext) {
     out.appendLine("[activate] webview view provider registered");
 
     // Evaluate if the user is missing a required API key
-    const hasKey = await getApiKey(context);    
+    const hasKey = await getApiKey(context);
     const currentVersion = context.extension.packageJSON.version;
     const storedVersion = context.globalState.get<string>("aiAgentChat.version");
 
@@ -145,8 +221,13 @@ export async function activate(context: vscode.ExtensionContext) {
         const effConfig = await getEffectiveConfig(targetModel);
         out.appendLine("[models] fetching available models from " + effConfig.baseUrl);
         try {
-            const client = new ApiClient(effConfig);
+            const client = new ApiClient({
+                ...effConfig,
+                onRetry: (info) => out.appendLine("[chat] attempt " + info.attempt + "/" + info.maxAttempts +
+                    " failed (" + info.error + "); retrying in " + info.delayMs + " ms"),
+            });
             const models = await client.listModels();
+            cachedModels = models; // remember for instant restore on webview reload
             out.appendLine("[models] fetched " + models.length + " models: " + models.join(", "));
             panel.postMessage({
                 type: "modelsList",
@@ -155,6 +236,7 @@ export async function activate(context: vscode.ExtensionContext) {
             });
         } catch (err: any) {
             out.appendLine("[models] failed to fetch models: " + String(err));
+            // Keep the previous cachedModels (last known good) on failure.
             panel.postMessage({
                 type: "modelsList",
                 models: [effConfig.model],
@@ -168,7 +250,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const effConfig = await getEffectiveConfig();
         let models: string[] = [];
         try {
-            models = await new ApiClient(effConfig).listModels();
+            models = await new ApiClient({ ...effConfig, maxAttempts: 1 }).listModels();
         } catch (e) {
             out.appendLine("[timing] could not list models, falling back to current: " + String(e));
         }
@@ -209,7 +291,11 @@ export async function activate(context: vscode.ExtensionContext) {
             .map((m) => (m.role.toUpperCase() + ": " + (m.content ?? (m.tool_calls ? "[tool call]" : ""))))
             .join("\n\n");
 
-        const client = new ApiClient(effConfig);
+        const client = new ApiClient({
+            ...effConfig,
+            onRetry: (info) => out.appendLine("[chat] attempt " + info.attempt + "/" + info.maxAttempts +
+                " failed (" + info.error + "); retrying in " + info.delayMs + " ms"),
+        });
         const summaryResp = await client.chat([
             {
                 role: "system",
@@ -231,10 +317,10 @@ export async function activate(context: vscode.ExtensionContext) {
     async function compactHistory() {
         try {
             const result = await performCompaction();
-            panel.postMessage({ type: "tool", text: "compact_context → " + result });
+            recordAndPost("tool", "compact_context → " + result);
         } catch (err: any) {
             out.appendLine("[compact] FAILED: " + String(err));
-            panel.postMessage({ type: "error", text: "Compact failed: " + String(err) });
+            recordAndPost("error", "Compact failed: " + String(err));
         }
         panel.postMessage({ type: "done", text: "" });
     }
@@ -244,8 +330,46 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
         if (msg.type === "webviewReady") {
-            out.appendLine("[chat] webviewReady received, querying available models");
+            out.appendLine("[chat] webviewReady received, restoring chat state");
+            // The webview restores its own persisted state (draft / input height)
+            // before signaling readiness; adopt the freshest values it reports.
+            if (typeof msg.draft === "string") {
+                currentDraft = msg.draft;
+            }
+            if (typeof msg.height === "number" && msg.height > 0) {
+                inputHeight = Math.round(msg.height);
+            }
+            // 1) Replay the transcript so the view looks exactly as it was left.
+            if (uiLog.length > 0) {
+                panel.postMessage({ type: "renderHistory", items: uiLog });
+            }
+            // 2) Restore the model dropdown instantly from the cached list.
+            if (cachedModels.length > 0) {
+                panel.postMessage({ type: "modelsList", models: cachedModels, selected: selectedModel });
+            }
+            // 3) If an agent run is still in flight, put the UI back into running mode.
+            if (currentRun) {
+                panel.postMessage({ type: "runState", running: true });
+            }
+            // 4) Restore prompt state: Up/Down history, plus draft and input
+            //    height as a fallback when the webview's own state was lost.
+            panel.postMessage({
+                type: "promptState",
+                draft: currentDraft,
+                history: promptHistory,
+                inputHeight: inputHeight
+            });
+            // 5) Then refresh models from the server as before.
             await fetchAndSendModels();
+        } else if (msg.type === "draftChange" && typeof msg.text === "string") {
+            // Mirror of the input draft (debounced by the webview) so the draft
+            // survives webview disposal and window reloads.
+            currentDraft = msg.text;
+            void persistPromptState();
+        } else if (msg.type === "inputHeightChange" && typeof msg.height === "number") {
+            // Mirror of the user-resized input box height.
+            inputHeight = Math.round(msg.height);
+            void persistPromptState();
         } else if (msg.type === "fetchModels") {
             out.appendLine("[chat] fetchModels requested by user");
             await fetchAndSendModels();
@@ -270,6 +394,15 @@ export async function activate(context: vscode.ExtensionContext) {
         if (modelFromWebview) {
             selectedModel = modelFromWebview;
         }
+        uiLog.push({ role: "user", text });
+        // Record the prompt in the persisted Up/Down history (deduped, newest
+        // last) and clear the draft mirror (the webview already cleared input).
+        recordPrompt(text);
+        currentDraft = "";
+        void persistPromptState();
+        // Keep the webview's Up/Down history in sync (it also appends locally
+        // on submit for instant availability; this is the authoritative copy).
+        panel.postMessage({ type: "promptHistory", items: promptHistory });
         out.appendLine("[chat] user message: " + text.substring(0, 80) + " (model: " + selectedModel + ")");
 
         let effConfig = await getEffectiveConfig(selectedModel);
@@ -278,10 +411,10 @@ export async function activate(context: vscode.ExtensionContext) {
             // Prompt user directly when key is missing
             const entered = await promptForApiKey(context);
             if (!entered) {
-                panel.postMessage({
-                    type: "error",
-                    text: "API key is required. Run 'AI Agent Chat: Set API Key' from the Command Palette or enter it when prompted."
-                });
+                recordAndPost(
+                    "error",
+                    "API key is required. Run 'AI Agent Chat: Set API Key' from the Command Palette or enter it when prompted."
+                );
                 return;
             }
             effConfig.apiKey = entered;
@@ -291,7 +424,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const abortController = new AbortController();
         currentRun = abortController;
         try {
-            const client = new ApiClient(effConfig);
+            const client = new ApiClient({
+                ...effConfig,
+                onRetry: (info) => out.appendLine("[chat] attempt " + info.attempt + "/" + info.maxAttempts +
+                    " failed (" + info.error + "); retrying in " + info.delayMs + " ms"),
+            });
             const userMsg: ChatMessage = { role: "user", content: text };
             const priorHistory = history.slice(-MAX_HISTORY);
             const cfgNow = vscode.workspace.getConfiguration("aiAgentChat");
@@ -303,17 +440,14 @@ export async function activate(context: vscode.ExtensionContext) {
                     return;
                 }
                 if (delta.type === "assistant" && typeof delta.text === "string") {
-                    panel.postMessage({ type: "delta", text: delta.text });
+                    recordAndPost("delta", delta.text);
                 } else if (delta.type === "status" && typeof delta.text === "string") {
                     out.appendLine("[chat] " + delta.text);
                     if (delta.text.startsWith("[stopped:")) {
-                        panel.postMessage({ type: "error", text: delta.text });
+                        recordAndPost("error", delta.text);
                     }
                 } else if (delta.type === "tool") {
-                    panel.postMessage({
-                        type: "tool",
-                        text: (delta.name ? delta.name + " → " : "tool → ") + (delta.text ?? "")
-                    });
+                    recordAndPost("tool", (delta.name ? delta.name + " → " : "tool → ") + (delta.text ?? ""));
                 }
             }, abortController.signal, {
                 compactContext: async () => {
@@ -327,17 +461,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
             history.push(...newMessages);
             if (abortController.signal.aborted) {
-                panel.postMessage({ type: "error", text: "Stopped by user." });
+                recordAndPost("error", "Stopped by user.");
             }
             panel.postMessage({ type: "done", text: "" });
             out.appendLine("[chat] agent run finished" + (abortController.signal.aborted ? " (stopped)" : ""));
         } catch (err: any) {
             if (abortController.signal.aborted) {
                 out.appendLine("[chat] agent run stopped by user");
-                panel.postMessage({ type: "error", text: "Stopped by user." });
+                recordAndPost("error", "Stopped by user.");
             } else {
                 out.appendLine("[chat] agent run FAILED: " + String(err));
-                panel.postMessage({ type: "error", text: String(err) });
+                recordAndPost("error", String(err));
             }
             panel.postMessage({ type: "done", text: "" });
         } finally {
