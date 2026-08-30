@@ -1,0 +1,61 @@
+{
+  "name": "ai-agent-chat",
+  "displayName": "AI Chat",
+  "description": "Agentic AI chat for OpenAI-compatible APIs (no proxy, no TLS verification). Remote-SSH ready.",
+  "version": "0.3.0",
+  "publisher": "your-publisher",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./out/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiAgentChat.open",
+        "title": "AI Agent: Open Chat",
+        "enablement": "workspaceFolderCount != 0"
+      }
+    ],
+    "configuration": {
+      "title": "AI Agent Chat",
+      "properties": {
+        "aiAgentChat.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of the OpenAI-compatible API (e.g. https://api.openai.com/v1)",
+          "scope": "resource"
+        },
+        "aiAgentChat.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key",
+          "scope": "resource"
+        },
+        "aiAgentChat.model": {
+          "type": "string",
+          "default": "gpt-4o-mini",
+          "description": "Model name",
+          "scope": "resource"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.9.2",
+    "typescript": "^5.3.0"
+  }
+}

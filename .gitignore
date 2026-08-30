@@ -1,0 +1,27 @@
+# --- Build output ---
+out/
+*.tsbuildinfo
+
+# --- Packaging artifacts ---
+*.vsix
+
+# --- Dependencies ---
+node_modules/
+
+# --- Logs & debug ---
+*.log
+npm-debug.log*
+logs/
+
+# --- OS junk ---
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# --- Editor state (NOT the settings with your key!) ---
+.vscode
+
+# --- Local env / secrets ---
+.env
+.env.*
+*.local
