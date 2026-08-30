@@ -15,7 +15,6 @@
   "extensionKind": [
     "workspace"
   ],
-  "activationEvents": [],
   "contributes": {
     "commands": [
       {
@@ -50,7 +49,10 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -w -p ./"
+    "watch": "tsc -w -p ./",
+    "build": "node build.js",
+    "build:fast": "node build.js --skip-install",
+    "build:install": "node build.js --install"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",

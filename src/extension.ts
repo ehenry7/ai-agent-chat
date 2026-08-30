@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { runAgent, ChatMessage } from "./agent";
+import { runAgent } from "./agent";
+import { ChatMessage } from "./apiClient";
 import { ApiClient } from "./apiClient";
 import { ChatPanel } from "./chatPanel";
 
@@ -124,9 +125,8 @@ export function activate(context: vscode.ExtensionContext) {
       const pending = { role: "user" as const, content: trimmed };
 
       try {
-        panel.postMessage({ type: "user", text: trimmed });
-
         const newMessages = await runAgent(client, history, pending, (m) => {
+          if (!ChatPanel.current) { return; } // panel disposed — stop streaming
           panel.postMessage(m);
         });
 
@@ -136,18 +136,23 @@ export function activate(context: vscode.ExtensionContext) {
         // Keep the OpenAI tool-calling contract intact: assistant messages that
         // carried tool_calls are stripped to plain content, and tool results are
         // summarized into the assistant content (or dropped).
-        history = history
-          .map((m) =>
+       for (const m of newMessages) {
+          if (m.role === "tool") continue;
+          history.push(
             m.tool_calls
               ? { role: "assistant" as const, content: m.content ?? "" }
               : m
-          )
-          .slice(-MAX_HISTORY);
+          );
+        }
+        history = history.slice(-MAX_HISTORY);
+        
       } catch (err: any) {
         panel.postMessage({
           type: "error",
           text: `Agent run failed: ${err?.message ?? String(err)}`,
         });
+      } finally {
+        panel.postMessage({ type: "done", text: "" });
       }
     });
 

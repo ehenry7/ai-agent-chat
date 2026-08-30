@@ -58,7 +58,7 @@ export class ApiClient {
           res.on("data", (chunk) => (data += chunk));
           res.on("end", () => {
             if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-              reject(new Error(`API error res.statusCode:{res.statusCode}:res.statusCode:{data}`));
+              reject(new Error(`API error ${res.statusCode}: ${data}`));
               return;
             }
             try {

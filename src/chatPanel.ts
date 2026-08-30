@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 type WebviewMessage = { type: string; text?: string; name?: string };
 
 export class ChatPanel implements vscode.Disposable {
-  public static current: ChatPanel | undefinedcomposite;
+  public static current: ChatPanel | undefined;
 
   private readonly panel: vscode.WebviewPanel;
   private userMessageHandler: ((text: string) => void) | undefined;
@@ -48,8 +48,13 @@ export class ChatPanel implements vscode.Disposable {
   }
 
   public postMessage(msg: WebviewMessage): void {
-    if (this.panel.visible || this.panel.active) {
-      void this.panel.webview.postMessage(msg);
+     // Guard: posting to a disposed panel rejects unhandled and can throw.
+    try {
+      void this.panel.webview.postMessage(msg).then(undefined, () => {
+        // Panel already disposed — drop the message silently.
+      });
+    } catch {
+      // Panel already disposed — drop the message synchronously.
     }
   }
 
@@ -129,7 +134,7 @@ export class ChatPanel implements vscode.Disposable {
           append("error", msg.text);
           break;
       }
-      if (msg.type === "assistant" || msg.type === "error") {
+      if (msg.type === "assistant" || msg.type === "error" || msg.type === "done") {
         send.disabled = false;
       }
     });

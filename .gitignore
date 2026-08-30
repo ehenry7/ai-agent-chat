@@ -13,6 +13,10 @@ node_modules/
 npm-debug.log*
 logs/
 
+# --- Backup files from patch scripts ---
+*.bak*
+*.bak-tlsgit
+
 # --- OS junk ---
 Thumbs.db
 .DS_Store
@@ -25,3 +29,4 @@ Desktop.ini
 .env
 .env.*
 *.local
+project-bundle.md

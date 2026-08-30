@@ -58,7 +58,8 @@ function resolveInWorkspace(relPath: string): string {
   // Contain paths within the workspace root (reject ../ escapes).
   const root = workspaceRoot().fsPath;
   const abs = require("path").resolve(root, relPath);
-  if (!abs.startsWith(root)) {
+  const rel = require("path").relative(root, abs);
+  if (rel.startsWith("..") || require("path").isAbsolute(rel)) {
     throw new Error(`Path escapes the workspace: ${relPath}`);
   }
   return abs;
@@ -74,7 +75,7 @@ async function executeTool(name: string, args: any): Promise<string> {
       case "write_file": {
         const abs = resolveInWorkspace(String(args.path));
         fs.writeFileSync(abs, String(args.content), "utf8");
-        return `Wrote Buffer.byteLength(String(args.content))bytesto{Buffer.byteLength(String(args.content))} bytes toBuffer.byteLength(String(args.content))bytesto{args.path}`;
+        return `Wrote ${Buffer.byteLength(String(args.content))} bytes to ${args.path}`;
       }
       case "run_command": {
         const { execFile } = require("child_process");
@@ -88,7 +89,7 @@ async function executeTool(name: string, args: any): Promise<string> {
                 reject(err);
                 return;
               }
-              resolve(`STDOUT:\nstdout\nSTDERR:\n{stdout}\nSTDERR:\nstdout\nSTDERR:\n{stderr}`);
+              resolve(`STDOUT:\n${stdout}\nSTDERR:\n${stderr}`);
             }
           );
         });
@@ -97,7 +98,7 @@ async function executeTool(name: string, args: any): Promise<string> {
         return `Unknown tool: ${name}`;
     }
   } catch (err: any) {
-    return `Error: err?.message??String(err)\nSTDOUT:\n{err?.message ?? String(err)}\nSTDOUT:\nerr?.message??String(err)\nSTDOUT:\n{err?.stdout ?? ""}\nSTDERR:\n${err?.stderr ?? ""}`;
+    return `Error: ${err?.message ?? String(err)}\nSTDOUT:\n${err?.stdout ?? ""}\nSTDERR:\n${err?.stderr ?? ""}`;
   }
 }
 
@@ -114,11 +115,11 @@ export async function runAgent(
       "Use the provided tools to read, write, and run commands as needed.",
   };
 
-  const messages: ChatMessage[] = [...history, userMessage];
+  const messages: ChatMessage[] = [system, ...history, userMessage];
   const newMessages: ChatMessage[] = [userMessage];
 
   for (let step = 0; step < MAX_STEPS; step++) {
-    onDelta({ type: "status", text: `[step step+1/{step + 1}/step+1/{MAX_STEPS}]` });
+    onDelta({ type: "status", text: `[step ${step + 1}/${MAX_STEPS}]` });
 
     const assistant = await client.chat(messages, tools);
     newMessages.push(assistant);

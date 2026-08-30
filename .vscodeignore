@@ -6,3 +6,5 @@ out/**/*.map
 tsconfig.json
 **/.git/**
 **/*.ts
+*.bak*
+*.bak-tlsgit
