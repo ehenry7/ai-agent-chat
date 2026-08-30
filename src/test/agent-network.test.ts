@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 import * as http from "http";
 import { executeTool, fetchUrl } from "../tools";
+import { ApiClient } from "../apiClient";
 
 async function withLocalServer(
   handler: http.RequestListener,
@@ -67,5 +68,49 @@ test("fetchUrl rejects redirect chains beyond its limit", async () => {
     res.end();
   }, async (baseUrl) => {
     await assert.rejects(fetchUrl(`${baseUrl}/again`, 1), /too many redirects/);
+  });
+});
+
+test("ApiClient.chat parses tool calls from a JSON completion response", async () => {
+  await withLocalServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      choices: [{
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call_1",
+            type: "function",
+            function: { name: "read_file", arguments: "{\"path\":\"README.md\"}" },
+          }],
+        },
+      }],
+    }));
+  }, async (baseUrl) => {
+    const client = new ApiClient({ baseUrl, apiKey: "test", model: "test-model" });
+    const message = await client.chat([{ role: "user", content: "read README" }], [{ type: "function", function: { name: "read_file" } }]);
+    assert.equal(message.tool_calls?.[0].function.name, "read_file");
+    assert.equal(message.tool_calls?.[0].function.arguments, "{\"path\":\"README.md\"}");
+  });
+});
+
+test("ApiClient.chat rejects a non-2xx response with the body text", async () => {
+  await withLocalServer((_req, res) => {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end('{"error":{"message":"unauthorized"}}');
+  }, async (baseUrl) => {
+    const client = new ApiClient({ baseUrl, apiKey: "test", model: "test-model" });
+    await assert.rejects(client.chat([{ role: "user", content: "hi" }]), /API error 401.*unauthorized/);
+  });
+});
+
+test("ApiClient.chat rejects a response with no choices", async () => {
+  await withLocalServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"choices":[]}');
+  }, async (baseUrl) => {
+    const client = new ApiClient({ baseUrl, apiKey: "test", model: "test-model" });
+    await assert.rejects(client.chat([{ role: "user", content: "hi" }]), /Unexpected API response/);
   });
 });

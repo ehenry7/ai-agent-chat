@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatPanel";
 import { runAgent } from "./agent";
 import { ChatMessage, ApiClient } from "./apiClient";
+import { showWelcomeScreen, registerSetupHandler } from "./welcome";
 
 const MAX_HISTORY = 20;
 const SECRET_KEY = "aiAgentChat.apiKey";
@@ -15,6 +16,13 @@ export function normalizeApiKey(raw: string): string {
 
 /** Retrieve the API key from VS Code SecretStorage. */
 export async function getApiKey(context: vscode.ExtensionContext): Promise<string> {
+    const cfg = vscode.workspace.getConfiguration("aiAgentChat");
+    const envVar = cfg.get<string>("apiKeyEnvVar");
+
+    if (envVar && process.env[envVar]) {
+        return normalizeApiKey(process.env[envVar] || "");
+    }
+
     const key = await context.secrets.get(SECRET_KEY);
     return normalizeApiKey(key || "");
 }
@@ -100,10 +108,30 @@ export async function activate(context: vscode.ExtensionContext) {
     const panel = new ChatViewProvider(context);
     out.appendLine("[activate] provider created");
 
+    // Register the setup message handler exactly once (not per welcome-screen show),
+    // so the ⚙️ button works for returning users and handlers don't accumulate.
+    registerSetupHandler(context, panel);
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand("aiAgentChat.showWelcome", () => {
+            showWelcomeScreen(context, panel);
+        })
+    );
+
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId, panel)
     );
     out.appendLine("[activate] webview view provider registered");
+
+    // Evaluate if the user is missing a required API key
+    const hasKey = await getApiKey(context);    
+    const currentVersion = context.extension.packageJSON.version;
+    const storedVersion = context.globalState.get<string>("aiAgentChat.version");
+
+    if (currentVersion !== storedVersion || !hasKey) {
+        void context.globalState.update("aiAgentChat.version", currentVersion);
+        showWelcomeScreen(context, panel);
+    }
 
     async function getEffectiveConfig(targetModel?: string) {
         const cfgNow = vscode.workspace.getConfiguration("aiAgentChat");
@@ -267,8 +295,8 @@ export async function activate(context: vscode.ExtensionContext) {
             const userMsg: ChatMessage = { role: "user", content: text };
             const priorHistory = history.slice(-MAX_HISTORY);
             const cfgNow = vscode.workspace.getConfiguration("aiAgentChat");
-            const rawMaxSteps = cfgNow.get<number>("maxSteps", 15);
-            const maxSteps = Math.min(50, Math.max(1, Number(rawMaxSteps) || 15));
+            const rawMaxSteps = cfgNow.get<number>("maxSteps", 25);
+            const maxSteps = Math.min(500, Math.max(1, Number(rawMaxSteps) || 25));
 
             const newMessages = await runAgent(client, priorHistory, userMsg, (delta: any) => {
                 if (!delta || typeof delta !== "object") {
@@ -276,6 +304,11 @@ export async function activate(context: vscode.ExtensionContext) {
                 }
                 if (delta.type === "assistant" && typeof delta.text === "string") {
                     panel.postMessage({ type: "delta", text: delta.text });
+                } else if (delta.type === "status" && typeof delta.text === "string") {
+                    out.appendLine("[chat] " + delta.text);
+                    if (delta.text.startsWith("[stopped:")) {
+                        panel.postMessage({ type: "error", text: delta.text });
+                    }
                 } else if (delta.type === "tool") {
                     panel.postMessage({
                         type: "tool",
@@ -366,4 +399,4 @@ export async function activate(context: vscode.ExtensionContext) {
     out.appendLine("[activate] complete - all handlers registered");
 }
 
-export function deactivate() {}
+export function deactivate() { }

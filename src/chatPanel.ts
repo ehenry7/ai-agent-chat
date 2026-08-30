@@ -118,7 +118,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private _getHtml(nonce: string, csp: string, webview: vscode.Webview): string {
 
-        // 1. Resolve the secure URIs for your icons
+        // 1. Resolve the secure URIs for your icons[cite: 1]
         const lightIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "chat-icon-light.svg")).toString();
         const darkIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, "media", "chat-icon-dark.svg")).toString();
 
@@ -137,9 +137,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             "var refreshModels = document.getElementById('refreshModels');",
             "var timeModels = document.getElementById('timeModels');",
             "var compactBtn = document.getElementById('compactBtn');",
+            "var settingsBtn = document.getElementById('settingsBtn');",
+            "var setupOverlay = document.getElementById('setupOverlay');",
+            "var setupBaseUrl = document.getElementById('setupBaseUrl');",
+            "var setupAuthType = document.getElementById('setupAuthType');",
+            "var setupAuthLabel = document.getElementById('setupAuthLabel');",
+            "var setupAuthValue = document.getElementById('setupAuthValue');",
+            "var setupTestBtn = document.getElementById('setupTestBtn');",
+            "var setupStatus = document.getElementById('setupStatus');",
+            "var setupModelSelect = document.getElementById('setupModelSelect');",
+            "var setupMaxSteps = document.getElementById('setupMaxSteps');",
+            "var setupSaveBtn = document.getElementById('setupSaveBtn');",
             "var line = 0;",
             "var knownModels = [];",
             "var timings = {};",
+            "function updateSetupAuthInput(authType, authValue, apiKeyStored) {",
+            "  if (!setupAuthLabel || !setupAuthValue) { return; }",
+            "  if (authType === 'env') {",
+            "    setupAuthLabel.textContent = 'Env Var Name'; setupAuthValue.placeholder = 'e.g. OPENAI_API_KEY'; setupAuthValue.type = 'text';",
+            "    if (authValue !== undefined) { setupAuthValue.value = authValue; }",
+            "  } else {",
+            "    setupAuthLabel.textContent = 'API Key'; setupAuthValue.type = 'password';",
+            "    setupAuthValue.placeholder = apiKeyStored ? 'Stored securely; enter only to replace' : 'sk-...';",
+            "    if (authValue !== undefined) { setupAuthValue.value = ''; }",
+            "  }",
+            "}",
+            "if(setupAuthType) {",
+            "  setupAuthType.addEventListener('change', function() {",
+            "    updateSetupAuthInput(this.value, '', false);",
+            "  });",
+            "}",
+            "if(setupTestBtn) {",
+            "  setupTestBtn.addEventListener('click', function() {",
+            "    setupStatus.textContent = 'Testing...'; setupStatus.style.color = 'var(--vscode-descriptionForeground)';",
+            "    vscode.postMessage({ type: 'testConnection', baseUrl: setupBaseUrl.value, authType: setupAuthType.value, authValue: setupAuthValue.value });",
+            "  });",
+            "}",
+            "if(setupSaveBtn) {",
+            "  setupSaveBtn.addEventListener('click', function() {",
+            "    vscode.postMessage({ type: 'saveSetup', baseUrl: setupBaseUrl.value, authType: setupAuthType.value, authValue: setupAuthValue.value, model: setupModelSelect.value, maxSteps: setupMaxSteps ? setupMaxSteps.value : '15' });",
+            "  });",
+            "}",
             "function setStatus(t, cls) {",
             "    if (statusEl) { statusEl.textContent = t;",
             "        statusEl.className = cls || 'st';",
@@ -224,6 +262,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             "        setStatus('compacting context...', 'st-wait');",
             "    });",
             "}",
+            "if (settingsBtn) {",
+            "    settingsBtn.addEventListener('click', function () {",
+            "        vscode.postMessage({ type: 'openSettings' });",
+            "        setStatus('opening setup...', 'st-wait');",
+            "    });",
+            "}",
             "if (modelSelect) {",
             "    modelSelect.addEventListener('change', function () {",
             "        var sel = modelSelect.value;",
@@ -273,6 +317,31 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             "    logLine('recv: ' + JSON.stringify(msg).substring(0, 120));",
             "    if (!msg || !msg.type) { return; }",
             "    switch (msg.type) {",
+            "        case 'showSetup':",
+            "            if (setupMaxSteps) setupMaxSteps.value = String(msg.maxSteps || 15);",
+            "            if (setupAuthType) setupAuthType.value = msg.authType === 'env' ? 'env' : 'key';",
+            "            updateSetupAuthInput(msg.authType, msg.authValue, Boolean(msg.apiKeyStored));",
+            "            if (setupOverlay) setupOverlay.style.display = 'flex';",
+            "            break;",
+            "        case 'hideSetup':",
+            "            if (setupOverlay) setupOverlay.style.display = 'none';",
+            "            break;",
+            "        case 'setupModelsList':",
+            "            if (setupModelSelect) {",
+            "                setupModelSelect.innerHTML = '';",
+            "                msg.models.forEach(function(m) {",
+            "                    var opt = document.createElement('option');",
+            "                    opt.value = m;",
+            "                    opt.textContent = m;",
+            "                    setupModelSelect.appendChild(opt);",
+            "                });",
+            "            }",
+            "            if (setupStatus) { setupStatus.textContent = 'Success! Pick a model.'; setupStatus.style.color = '#104a10'; }",
+            "            if (setupSaveBtn) setupSaveBtn.disabled = false;",
+            "            break;",
+            "        case 'setupError':",
+            "            if (setupStatus) { setupStatus.textContent = 'Error: ' + msg.text; setupStatus.style.color = 'var(--vscode-errorForeground)'; }",
+            "            break;",
             "        case 'modelsList':",
             "            updateModelOptions(msg.models, msg.selected);",
             "            setStatus(msg.error ? 'failed fetching models' : 'ready', msg.error ? 'st-err' : 'st-ok');",
@@ -371,11 +440,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             "  padding: 6px 14px; cursor: pointer; }",
             "#stop:disabled { opacity: 0.4; cursor: default; }",
             ".my-theme-icon { content: url('" + lightIconUri + "'); width: 24px; height: 24px; }",
-            "body.vscode-dark .my-theme-icon, body.vscode-high-contrast .my-theme-icon { content: url('" + darkIconUri + "'); }"
+            "body.vscode-dark .my-theme-icon, body.vscode-high-contrast .my-theme-icon { content: url('" + darkIconUri + "'); }",
+            "#setupOverlay { display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; box-sizing: border-box; background: var(--vscode-sideBar-background); z-index: 9999; padding: 15px; overflow-y: auto; flex-direction: column; gap: 12px; }",
+            ".s-field { display: flex; flex-direction: column; gap: 6px; }",
+            ".s-field label { font-weight: bold; font-size: 11px; }",
+            ".s-field input, .s-field select { background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 6px; font-size: 11px; box-sizing: border-box; width: 100%; }",
+            ".s-btn { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 8px; cursor: pointer; font-size: 11px; width: 100%; }",
+            ".s-btn:hover { background: var(--vscode-button-hoverBackground); }",
+            ".s-btn:disabled { opacity: 0.5; cursor: default; }"
         ].join("\n"));
         htmlParts.push("</style>");
         htmlParts.push("</head>");
         htmlParts.push("<body>");
+        htmlParts.push('<div id="setupOverlay">');
+        htmlParts.push('<h2 style="font-size: 14px; margin: 0 0 10px 0;">AI Agent Setup</h2>');
+        htmlParts.push('<div class="s-field"><label>Base URL</label><input id="setupBaseUrl" type="text" value="http://techdev.hicomputing.huawei.com:18000" /></div>');
+        htmlParts.push('<div class="s-field"><label>Auth Method</label><select id="setupAuthType"><option value="key">API Key</option><option value="env">Environment Variable</option></select></div>');
+        htmlParts.push('<div class="s-field"><label id="setupAuthLabel">API Key</label><input id="setupAuthValue" type="password" placeholder="sk-..." /></div>');
+        htmlParts.push('<button id="setupTestBtn" class="s-btn">Test Connection</button>');
+        htmlParts.push('<div id="setupStatus" style="font-size: 11px;"></div>');
+        htmlParts.push('<div class="s-field"><label>Default Model</label><select id="setupModelSelect"><option value="">Test connection first...</option></select></div>');
+        htmlParts.push('<div class="s-field"><label>Max Steps</label><input id="setupMaxSteps" type="number" min="1" max="500" value="25" /></div>');
+        htmlParts.push('<button id="setupSaveBtn" class="s-btn" disabled>Save & Close</button>');
+        htmlParts.push('</div>');
         htmlParts.push('<div id="modelHeader">');
         htmlParts.push('<div class="my-theme-icon" style="margin-right: 6px;"></div>');
         htmlParts.push('<label for="modelSelect">Model:</label>');
@@ -383,6 +470,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         htmlParts.push('<button id="refreshModels" title="Refresh available models from server">🔄</button>');
         htmlParts.push('<button id="timeModels" title="Measure response time of each model">⏱</button>');
         htmlParts.push('<button id="compactBtn" title="Compact conversation context (summarize history to save tokens)">🗜️</button>');
+        htmlParts.push('<button id="settingsBtn" title="Open Setup / Settings">⚙️</button>');
         htmlParts.push('</div>');
         htmlParts.push('<div id="status" class="st">BOOT: script not running yet</div>');
         htmlParts.push('<div id="messages"></div>');

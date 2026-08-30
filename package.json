@@ -2,7 +2,7 @@
   "name": "ai-agent-chat",
   "displayName": "AI Chat",
   "description": "Agentic AI chat for OpenAI-compatible APIs with file and shell tools. No runtime dependencies; TLS verification enabled. Remote-SSH ready.",
-  "version": "0.19.7",
+  "version": "0.29.0",
   "publisher": "Huawei",
   "engines": {
     "vscode": "^1.85.0"
@@ -36,12 +36,14 @@
     },
     "commands": [
       {
+        "command": "aiAgentChat.showWelcome",
+        "title": "AI Agent Chat: Show Setup Screen",
+        "icon": "media/icon.svg"
+      },
+      {
         "command": "aiAgentChat.open",
         "title": "AI Agent Chat: Open",
-        "icon": {
-          "light": "media/chat-icon-light.svg",
-          "dark": "media/chat-icon-dark.svg"
-        }
+        "icon": "media/icon.svg"
       },
       {
         "command": "aiAgentChat.setApiKey",
@@ -77,11 +79,17 @@
           "description": "Search engine URL template used by the agent's web_search tool. %s is replaced with the URL-encoded query. Point this at an internal search engine if public internet access is unavailable.",
           "scope": "resource"
         },
+        "aiAgentChat.apiKeyEnvVar": {
+          "type": "string",
+          "default": "",
+          "description": "Environment variable name to read the API key from (e.g., OPENAI_API_KEY). Overrides SecretStorage if set.",
+          "scope": "resource"
+        },
         "aiAgentChat.maxSteps": {
           "type": "number",
-          "default": 15,
-          "minimum": 1,
-          "maximum": 50,
+          "default": 25,
+          "minimum": 2,
+          "maximum": 500,
           "description": "Maximum number of agent loop steps (model calls) per chat turn before the agent stops itself.",
           "scope": "resource"
         }

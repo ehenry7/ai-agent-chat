@@ -4,7 +4,7 @@ An agentic chat assistant for VS Code, backed by an OpenAI-compatible
 chat-completions API. The agent can read and write files in your workspace
 and run shell commands to help you complete tasks.
 
-![Version](https://img.shields.io/badge/version-0.19.7-blue)
+![Version](https://img.shields.io/badge/version-0.29.0-blue)
 
 ---
 
@@ -41,6 +41,13 @@ and run shell commands to help you complete tasks.
   command that would just fail.
 - **Incremental responses** — assistant text and tool output render as
   each agent step completes.
+- **OpenAI-compatible response handling** — chat completions are requested
+  non-streamed and the assistant message is read from
+  `choices[0].message`. Non-2xx responses and responses without a usable
+  choice surface as errors that include the response body.
+- **Tool argument recovery** — every agent turn instructs the model to
+  emit strict JSON arguments. Invalid tool arguments return a specific
+  retry instruction to the model rather than an opaque JSON parser error.
 - **Parallel read-only tool calls** — when the model requests several
   tool calls in one turn, read-only ones (`read_file`, `list_directory`,
   `search_in_files`, `find_files`, `git_status`, `git_log`, `fetch_url`,
@@ -48,11 +55,6 @@ and run shell commands to help you complete tasks.
   concurrently via `Promise.all`; mutating calls (`write_file`,
   `run_command`, `git_commit`, ...) still run one at a time. Tool
   response messages are always reassembled in the original call order.
-- **Oversized tool results are truncated** before being sent back to the
-  model (default cap 8KB, cut at a valid UTF-8 boundary with a
-  `…[truncated: N bytes, M lines → kept K bytes]` marker) to avoid
-  blowing the context window; the chat view still shows the full,
-  untruncated output.
 - **Conversation history** — the last 20 prior messages are sent per
   turn; history is committed after a completed run.
 - **Model selection** — a dropdown at the top of the chat view queries
@@ -63,6 +65,12 @@ and run shell commands to help you complete tasks.
   request to every available model, measures round-trip latency, and
   displays the result (or `(failed)`) next to each model name in the
   dropdown so you can pick the fastest one.
+- **Setup screen defaults** — the setup screen includes Max Steps and
+  resets/saves it to the default value (`15`, clamped 1-50) when setup
+  settings are saved.
+- **Preserved authentication setup** — reopening setup keeps the chosen
+  authentication method and environment-variable name. Stored API keys
+  are not exposed; a blank API-key field keeps the existing secret.
 - **Stop button** — cancels the in-flight request and agent loop after
   Send but before the answer is fully received; aborts the underlying
   HTTP request and reports "Stopped by user." in the chat.
@@ -126,7 +134,8 @@ gitignored by default). You can edit them via the Settings UI, or open
 {
   "aiAgentChat.apiKey": "sk-...",
   "aiAgentChat.baseUrl": "http://techdev.hicomputing.huawei.com:18000",
-  "aiAgentChat.model": "GLM-5.2-1"
+  "aiAgentChat.model": "GLM-5.2-1",
+  "aiAgentChat.maxSteps": 15
 }
 ```
 
@@ -170,7 +179,7 @@ stored settings at startup.
 2. Pick a model from the dropdown at the top (🔄 refreshes the list from
    the server, ⏱ benchmarks response time per model).
 3. Type your question in the input box and press **Enter** (or **Send**).
-4. The agent streams its answer and may invoke tools (file, git, web,
+4. The agent answers step by step and may invoke tools (file, git, web,
    or VS Code UI tools — see Features above); tool output is shown
    inline. Destructive actions (`run_command`, `delete_file`,
    `git_commit`) prompt for confirmation first.
@@ -285,6 +294,9 @@ bundle.js            Generates project-bundle.md documentation
 
 ## Known Limitations / Roadmap
 
+- [ ] Models that emit tool calls as `<tool_call>` markup inside the
+      message content (notably the GLM family) end the run after one step,
+      because the agent loop only sees the OpenAI `tool_calls` field
 - [ ] `run_command` approval prompt before executing
 - [ ] Move API key from settings to `SecretStorage`
 - [ ] TLS verification as a configurable setting (`aiAgentChat.tlsVerify`, default true)

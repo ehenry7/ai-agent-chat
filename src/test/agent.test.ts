@@ -9,7 +9,7 @@ import {
   parseSearchResults,
   unixCommandHint,
 } from "../tools";
-import { buildSystemPrompt, truncateResult, READONLY_TOOLS } from "../agent";
+import { buildSystemPrompt, parseToolArguments, READONLY_TOOLS } from "../agent";
 
 const ROOT = path.resolve("/workspace");
 
@@ -108,12 +108,26 @@ test("buildSystemPrompt mentions every provided tool name", () => {
   for (const name of toolNames) {
     assert.ok(prompt.includes(name), `expected prompt to mention ${name}`);
   }
+  assert.match(prompt, /arguments must be one valid JSON object/);
+  assert.match(prompt, /search_in_files.*"glob"/);
 });
 
-test("buildSystemPrompt describes cmd.exe on win32", () => {
+test("parseToolArguments accepts JSON objects and already-parsed objects", () => {
+  assert.deepEqual(parseToolArguments('{"query":"find me"}'), { query: "find me" });
+  assert.deepEqual(parseToolArguments({ path: "src/agent.ts" }), { path: "src/agent.ts" });
+  assert.deepEqual(parseToolArguments(""), {});
+});
+
+test("parseToolArguments rejects malformed and non-object arguments", () => {
+  assert.throws(() => parseToolArguments('{"query":"text","path": src/agent.ts}'), SyntaxError);
+  assert.throws(() => parseToolArguments("[]"), /arguments must be a JSON object/);
+  assert.throws(() => parseToolArguments(42), /arguments must be a JSON object/);
+});
+
+test("buildSystemPrompt describes powershell.exe on win32", () => {
   const prompt = buildSystemPrompt(["run_command"], "win32");
   assert.match(prompt, /host OS is "win32"/);
-  assert.match(prompt, /run_command executes via cmd\.exe/);
+  assert.match(prompt, /run_command executes via powershell\.exe/);
 });
 
 test("buildSystemPrompt describes bash on non-Windows platforms", () => {
@@ -124,47 +138,6 @@ test("buildSystemPrompt describes bash on non-Windows platforms", () => {
   const darwinPrompt = buildSystemPrompt(["run_command"], "darwin");
   assert.match(darwinPrompt, /host OS is "darwin"/);
   assert.match(darwinPrompt, /run_command executes via bash/);
-});
-
-test("truncateResult passes short text through unchanged", () => {
-  const text = "hello world";
-  assert.equal(truncateResult(text), text);
-});
-
-test("truncateResult passes text exactly at the byte limit through unchanged", () => {
-  const text = "a".repeat(100);
-  assert.equal(truncateResult(text, 100), text);
-});
-
-test("truncateResult truncates oversized text and appends a marker", () => {
-  const text = "a".repeat(200);
-  const result = truncateResult(text, 100);
-  assert.match(result, /\u2026\[truncated: 200 bytes, 1 lines \u2192 kept 100 bytes\]$/);
-  assert.equal(Buffer.byteLength(result.replace(/\n\u2026\[truncated:.*\]$/, ""), "utf8"), 100);
-});
-
-test("truncateResult reports original line count in the marker", () => {
-  const text = "line\n".repeat(50) + "a".repeat(9000);
-  const result = truncateResult(text, 8192);
-  assert.match(result, /\u2026\[truncated: \d+ bytes, 51 lines \u2192 kept \d+ bytes\]$/);
-});
-
-test("truncateResult never splits a multi-byte UTF-8 character", () => {
-  // Each "\u00e9" (é) encodes to 2 bytes in UTF-8; a byte-limit that lands
-  // mid-character must back off to the previous whole character.
-  const text = "\u00e9".repeat(60); // 120 bytes
-  const result = truncateResult(text, 101); // odd limit forces a mid-char cut
-  const kept = result.replace(/\n\u2026\[truncated:.*\]$/, "");
-  // Round-tripping through Buffer must reproduce the exact same string (no
-  // replacement characters from a truncated multi-byte sequence).
-  assert.equal(Buffer.from(kept, "utf8").toString("utf8"), kept);
-  assert.ok(Buffer.byteLength(kept, "utf8") <= 101);
-  assert.ok(!kept.includes("\ufffd"));
-});
-
-test("truncateResult keeps multi-byte text intact when well under the limit", () => {
-  const text = "caf\u00e9 \u2014 \u65e5\u672c\u8a9e";
-  assert.equal(truncateResult(text, 8192), text);
 });
 
 test("READONLY_TOOLS contains the expected read-only tool names", () => {

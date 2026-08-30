@@ -16,45 +16,6 @@ export const READONLY_TOOLS = new Set([
   "get_active_editor",
 ]);
 
-/**
- * Truncates a tool result to at most `maxBytes` UTF-8 bytes, cutting at a valid
- * character boundary (never splitting a multi-byte sequence), and appends a
- * marker noting how much was cut. Passthrough if already under the limit.
- * Exported for unit testing.
- */
-export function truncateResult(text: string, maxBytes = 8192): string {
-  const buf = Buffer.from(text, "utf8");
-  if (buf.length <= maxBytes) {
-    return text;
-  }
-
-  const origBytes = buf.length;
-  const origLines = text.split("\n").length;
-
-  // Back off to the start of the (possibly incomplete) character at the cut point.
-  let start = maxBytes;
-  while (start > 0 && (buf[start] & 0xc0) === 0x80) {
-    start--;
-  }
-  let end = maxBytes;
-  const firstByte = buf[start];
-  let charLen = 1;
-  if ((firstByte & 0xe0) === 0xc0) {
-    charLen = 2;
-  } else if ((firstByte & 0xf0) === 0xe0) {
-    charLen = 3;
-  } else if ((firstByte & 0xf8) === 0xf0) {
-    charLen = 4;
-  }
-  if (start + charLen > maxBytes) {
-    end = start; // the character at the boundary is incomplete; drop it
-  }
-
-  const kept = buf.subarray(0, end);
-  const marker = `\n\u2026[truncated: ${origBytes} bytes, ${origLines} lines \u2192 kept ${kept.length} bytes]`;
-  return kept.toString("utf8") + marker;
-}
-
 /** Pure system-prompt builder, exported for unit testing (no vscode dependency). */
 export function buildSystemPrompt(toolNames: string[], platform: NodeJS.Platform): string {
   const shell = platform === "win32" ? "powershell.exe" : "bash";
@@ -62,12 +23,32 @@ export function buildSystemPrompt(toolNames: string[], platform: NodeJS.Platform
     "You are a coding agent working inside a VS Code workspace. " +
     `The host OS is "${platform}" (run_command executes via ${shell}). ` +
     `Use the provided tools (${toolNames.join(", ")}) to explore, read, write, and run commands as needed. ` +
+    "Every tool call's arguments must be one valid JSON object: quote every property name and string value with double quotes, " +
+    "never use bare file paths, and use only the properties in that tool's schema. For search_in_files, limit a search with \"glob\", not \"path\". " +
     "Prefer edit_file over write_file for targeted changes to existing files, prefer find_files/" +
     "list_directory/search_in_files over shell commands like find/grep/ls for file discovery and " +
     "text search \u2014 they work identically across platforms, unlike Unix shell utilities on Windows. " +
     "If the conversation has grown very long and you're at risk of running out of context, call " +
     "compact_context to summarize and free up space before continuing."
   );
+}
+
+export function parseToolArguments(rawArguments: unknown): Record<string, unknown> {
+  if (rawArguments === undefined || rawArguments === null || rawArguments === "") {
+    return {};
+  }
+  if (typeof rawArguments === "object" && !Array.isArray(rawArguments)) {
+    return rawArguments as Record<string, unknown>;
+  }
+  if (typeof rawArguments !== "string") {
+    throw new Error("arguments must be a JSON object");
+  }
+
+  const parsed = JSON.parse(rawArguments);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("arguments must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
 }
 
 export async function runAgent(
@@ -86,10 +67,12 @@ export async function runAgent(
 
   const messages: ChatMessage[] = [system, ...history, userMessage];
   const newMessages: ChatMessage[] = [userMessage];
+  let finished = false;
 
   for (let step = 0; step < maxSteps; step++) {
     if (signal?.aborted) {
       onDelta({ type: "status", text: "[stopped by user]" });
+      finished = true;
       break;
     }
     onDelta({ type: "status", text: `[step ${step + 1}/${maxSteps}]` });
@@ -107,9 +90,14 @@ export async function runAgent(
       const runOne = async (i: number): Promise<string> => {
         const call = calls[i];
         try {
-          const args = JSON.parse(call.function.arguments || "{}");
+          const args = parseToolArguments(call.function.arguments);
           return await executeTool(call.function.name, args, toolContext);
         } catch (e: any) {
+          if (e instanceof SyntaxError || e?.message === "arguments must be a JSON object") {
+            return `Tool ${call.function.name} was not run: its arguments were not valid JSON. ` +
+              "Retry the tool with exactly one JSON object, using double quotes around all keys and string values, " +
+              "and only fields declared in its schema.";
+          }
           return `Error executing tool: ${e?.message ?? String(e)}`;
         }
       };
@@ -138,6 +126,7 @@ export async function runAgent(
         const call = calls[i];
         if (results[i] === undefined) {
           onDelta({ type: "status", text: "[stopped by user]" });
+          finished = true;
           break;
         }
         const result = results[i] as string;
@@ -146,7 +135,7 @@ export async function runAgent(
         const toolMsg: ChatMessage = {
           role: "tool",
           tool_call_id: call.id,
-          content: truncateResult(result),
+          content: result,
         };
         messages.push(toolMsg);
         newMessages.push(toolMsg);
@@ -155,8 +144,19 @@ export async function runAgent(
     }
 
     // Final answer.
+    if (!assistant.content) {
+      onDelta({ type: "status", text: "[stopped: model returned an empty response with no tool calls]" });
+    }
     onDelta({ type: "assistant", text: assistant.content ?? "" });
+    finished = true;
     break;
+  }
+
+  if (!finished) {
+    onDelta({
+      type: "status",
+      text: `[stopped: reached max steps (${maxSteps}) while tool calls were still pending]`,
+    });
   }
 
   return newMessages;

@@ -26,12 +26,7 @@ interface ChatResponse {
 export class ApiClient {
   constructor(private cfg: ApiConfig) {}
 
-  async chat(
-    messages: ChatMessage[],
-    tools?: any[],
-    signal?: AbortSignal,
-    onDelta?: (token: string) => void
-  ): Promise<ChatMessage> {
+  async chat(messages: ChatMessage[], tools?: any[], signal?: AbortSignal): Promise<ChatMessage> {
     const url = this.buildUrl();
     const isHttps = url.protocol === "https:";
     const transport = isHttps ? https : http;
@@ -39,7 +34,6 @@ export class ApiClient {
     const body = JSON.stringify({
       model: this.cfg.model,
       messages,
-      stream: true,
       ...(tools && tools.length ? { tools } : {}),
     });
 
@@ -62,73 +56,24 @@ export class ApiClient {
           },
         },
         (res) => {
-          if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
-            let errorData = "";
-            res.on("data", (chunk) => (errorData += chunk));
-            res.on("end", () => {
-              reject(new Error(`API error ${res.statusCode}: ${errorData}`));
-            });
-            return;
-          }
-
-          let buffer = "";
-          const finalMessage: ChatMessage = { role: "assistant", content: "" };
-
-          res.on("data", (chunk) => {
-            buffer += chunk.toString("utf8");
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || ""; // Keep incomplete trailing line
-
-            for (let line of lines) {
-              line = line.trim();
-              if (line.startsWith("data: ") && line !== "data: [DONE]") {
-                try {
-                  const parsed = JSON.parse(line.slice(6));
-                  const delta = parsed.choices?.[0]?.delta;
-                  
-                  if (!delta) continue;
-
-                  // Stream and accumulate content
-                  if (delta.content) {
-                    finalMessage.content = (finalMessage.content || "") + delta.content;
-                    if (onDelta) onDelta(delta.content);
-                  }
-
-                  // Accumulate tool calls 
-                  if (delta.tool_calls) {
-                    if (!finalMessage.tool_calls) finalMessage.tool_calls = [];
-                    
-                    for (const tc of delta.tool_calls) {
-                      const idx = tc.index;
-                      if (!finalMessage.tool_calls[idx]) {
-                        finalMessage.tool_calls[idx] = {
-                          id: tc.id,
-                          type: tc.type || "function",
-                          function: { 
-                            name: tc.function?.name || "", 
-                            arguments: tc.function?.arguments || "" 
-                          }
-                        };
-                      } else {
-                        if (tc.function?.arguments) {
-                          finalMessage.tool_calls[idx].function.arguments += tc.function.arguments;
-                        }
-                      }
-                    }
-                  }
-                } catch (e) {
-                  // Ignore partial/malformed JSON mid-stream
-                }
-              }
-            }
-          });
-
+          let data = "";
+          res.on("data", (chunk) => (data += chunk));
           res.on("end", () => {
-            // Remove nulls if indices were skipped
-            if (finalMessage.tool_calls) {
-              finalMessage.tool_calls = finalMessage.tool_calls.filter(Boolean);
+            if (res.statusCode && (res.statusCode < 200 || res.statusCode >= 300)) {
+              reject(new Error(`API error ${res.statusCode}: ${data}`));
+              return;
             }
-            resolve(finalMessage);
+            try {
+              const parsed = JSON.parse(data) as ChatResponse;
+              const message = parsed.choices?.[0]?.message;
+              if (!message) {
+                reject(new Error(`Unexpected API response: ${data}`));
+                return;
+              }
+              resolve(message);
+            } catch (e: any) {
+              reject(new Error(`Failed to parse API response: ${e.message}`));
+            }
           });
         }
       );

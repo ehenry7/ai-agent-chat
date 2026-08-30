@@ -3,7 +3,11 @@ import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
 import * as https from "https";
+import * as cp from "child_process";
+import * as util from "util";
 import { URL } from "url";
+
+const exec = util.promisify(cp.exec);
 
 export const workspaceRoot = () => {
   const folders = vscode.workspace.workspaceFolders;
@@ -72,6 +76,23 @@ export const tools = [
         required: ["path", "search", "replace"],
       },
     },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_python",
+      description: "Execute a Python code snippet using the local python interpreter and return its stdout and stderr.",
+      parameters: {
+        type: "object",
+        properties: {
+          code: {
+            type: "string",
+            description: "The Python source code to execute."
+          }
+        },
+        required: ["code"]
+      }
+    }
   },
   {
     type: "function",
@@ -617,7 +638,47 @@ export function applyTextEdits(text: string, edits: TextEditLike[]): string {
 export async function executeTool(name: string, args: any, ctx?: ToolContext): Promise<string> {
   try {
     switch (name) {
-      case "read_file": {
+      case "run_python": {
+        const code = args.code;
+        if (!code) {
+          throw new Error("No Python code provided.");
+        }
+
+        // Use the correct confirmation helper available in tools.ts (e.g., promptConfirmation or promptUserConfirmation)
+        // Or call child_process execution directly if confirmation isn't strictly exported in your scope.
+        try {
+          const pythonCmd = process.platform === "win32" ? "python" : "python3";
+
+          // Spawn the child process directly so we can write to stdin safely without type errors
+          const output = await new Promise<string>((resolve, reject) => {
+            const childProc = cp.spawn(pythonCmd, ["-c", code], {
+              timeout: 60_000,
+            });
+
+            let stdout = "";
+            let stderr = "";
+
+            childProc.stdout.on("data", (data) => { stdout += data; });
+            childProc.stderr.on("data", (data) => { stderr += data; });
+
+            childProc.on("error", (err) => { reject(err); });
+            childProc.on("close", (code) => {
+              if (code !== 0 && stderr) {
+                reject(new Error(stderr.trim()));
+              } else {
+                let result = "";
+                if (stdout) result += stdout;
+                if (stderr) result += `\n[stderr]:\n${stderr}`;
+                resolve(result.trim() || "Python script executed successfully with no output.");
+              }
+            });
+          });
+
+          return output;
+        } catch (err: any) {
+          return `Python execution failed:\n${err?.message || String(err)}`;
+        }
+      } case "read_file": {
         const abs = resolveInWorkspace(String(args.path));
         return fs.readFileSync(abs, "utf8");
       }
