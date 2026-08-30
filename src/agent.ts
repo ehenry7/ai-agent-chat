@@ -1,147 +1,152 @@
-import * as vscode from "vscode";
-import * as fs from "fs";
 import { ApiClient, ChatMessage } from "./apiClient";
+import { tools, executeTool, ToolContext } from "./tools";
 
-const MAX_STEPS = 10;
-const workspaceRoot = () => {
-  const folders = vscode.workspace.workspaceFolders;
-  return folders && folders.length > 0 ? folders[0].uri : vscode.Uri.file(process.cwd());
-};
+/** Tool names that only read/query state; safe to run concurrently. Exported for tests. */
+export const READONLY_TOOLS = new Set([
+  "read_file",
+  "read_file_lines",
+  "list_directory",
+  "search_in_files",
+  "find_files",
+  "git_status",
+  "git_log",
+  "fetch_url",
+  "web_search",
+  "get_diagnostics",
+  "get_active_editor",
+]);
 
-const tools = [
-  {
-    type: "function",
-    function: {
-      name: "read_file",
-      description: "Read the content of a file in the workspace",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Relative path in the workspace" },
-        },
-        required: ["path"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "write_file",
-      description: "Write content to a file in the workspace (creates or overwrites)",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Relative path in the workspace" },
-          content: { type: "string", description: "Full file content" },
-        },
-        required: ["path", "content"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "run_command",
-      description: "Run a shell command in the workspace root (30s timeout)",
-      parameters: {
-        type: "object",
-        properties: {
-          command: { type: "string", description: "The command to run" },
-        },
-        required: ["command"],
-      },
-    },
-  },
-];
-
-function resolveInWorkspace(relPath: string): string {
-  // Contain paths within the workspace root (reject ../ escapes).
-  const root = workspaceRoot().fsPath;
-  const abs = require("path").resolve(root, relPath);
-  const rel = require("path").relative(root, abs);
-  if (rel.startsWith("..") || require("path").isAbsolute(rel)) {
-    throw new Error(`Path escapes the workspace: ${relPath}`);
+/**
+ * Truncates a tool result to at most `maxBytes` UTF-8 bytes, cutting at a valid
+ * character boundary (never splitting a multi-byte sequence), and appends a
+ * marker noting how much was cut. Passthrough if already under the limit.
+ * Exported for unit testing.
+ */
+export function truncateResult(text: string, maxBytes = 8192): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) {
+    return text;
   }
-  return abs;
+
+  const origBytes = buf.length;
+  const origLines = text.split("\n").length;
+
+  // Back off to the start of the (possibly incomplete) character at the cut point.
+  let start = maxBytes;
+  while (start > 0 && (buf[start] & 0xc0) === 0x80) {
+    start--;
+  }
+  let end = maxBytes;
+  const firstByte = buf[start];
+  let charLen = 1;
+  if ((firstByte & 0xe0) === 0xc0) {
+    charLen = 2;
+  } else if ((firstByte & 0xf0) === 0xe0) {
+    charLen = 3;
+  } else if ((firstByte & 0xf8) === 0xf0) {
+    charLen = 4;
+  }
+  if (start + charLen > maxBytes) {
+    end = start; // the character at the boundary is incomplete; drop it
+  }
+
+  const kept = buf.subarray(0, end);
+  const marker = `\n\u2026[truncated: ${origBytes} bytes, ${origLines} lines \u2192 kept ${kept.length} bytes]`;
+  return kept.toString("utf8") + marker;
 }
 
-async function executeTool(name: string, args: any): Promise<string> {
-  try {
-    switch (name) {
-      case "read_file": {
-        const abs = resolveInWorkspace(String(args.path));
-        return fs.readFileSync(abs, "utf8");
-      }
-      case "write_file": {
-        const abs = resolveInWorkspace(String(args.path));
-        fs.writeFileSync(abs, String(args.content), "utf8");
-        return `Wrote ${Buffer.byteLength(String(args.content))} bytes to ${args.path}`;
-      }
-      case "run_command": {
-        const { execFile } = require("child_process");
-        return await new Promise<string>((resolve, reject) => {
-          execFile(
-            process.platform === "win32" ? "cmd" : "bash",
-            process.platform === "win32" ? ["/d", "/c", String(args.command)] : ["-lc", String(args.command)],
-            { cwd: workspaceRoot().fsPath, timeout: 30_000 },
-            (err: any, stdout: string, stderr: string) => {
-              if (err) {
-                reject(err);
-                return;
-              }
-              resolve(`STDOUT:\n${stdout}\nSTDERR:\n${stderr}`);
-            }
-          );
-        });
-      }
-      default:
-        return `Unknown tool: ${name}`;
-    }
-  } catch (err: any) {
-    return `Error: ${err?.message ?? String(err)}\nSTDOUT:\n${err?.stdout ?? ""}\nSTDERR:\n${err?.stderr ?? ""}`;
-  }
+/** Pure system-prompt builder, exported for unit testing (no vscode dependency). */
+export function buildSystemPrompt(toolNames: string[], platform: NodeJS.Platform): string {
+  const shell = platform === "win32" ? "powershell.exe" : "bash";
+  return (
+    "You are a coding agent working inside a VS Code workspace. " +
+    `The host OS is "${platform}" (run_command executes via ${shell}). ` +
+    `Use the provided tools (${toolNames.join(", ")}) to explore, read, write, and run commands as needed. ` +
+    "Prefer edit_file over write_file for targeted changes to existing files, prefer find_files/" +
+    "list_directory/search_in_files over shell commands like find/grep/ls for file discovery and " +
+    "text search \u2014 they work identically across platforms, unlike Unix shell utilities on Windows. " +
+    "If the conversation has grown very long and you're at risk of running out of context, call " +
+    "compact_context to summarize and free up space before continuing."
+  );
 }
 
 export async function runAgent(
   client: ApiClient,
   history: ChatMessage[],
   userMessage: ChatMessage,
-  onDelta: (msg: any) => void
+  onDelta: (msg: any) => void,
+  signal?: AbortSignal,
+  toolContext?: ToolContext,
+  maxSteps = 15
 ): Promise<ChatMessage[]> {
   const system: ChatMessage = {
     role: "system",
-    content:
-      "You are a coding agent working inside a VS Code workspace. " +
-      "Use the provided tools to read, write, and run commands as needed.",
+    content: buildSystemPrompt(tools.map((t) => t.function.name), process.platform),
   };
 
   const messages: ChatMessage[] = [system, ...history, userMessage];
   const newMessages: ChatMessage[] = [userMessage];
 
-  for (let step = 0; step < MAX_STEPS; step++) {
-    onDelta({ type: "status", text: `[step ${step + 1}/${MAX_STEPS}]` });
+  for (let step = 0; step < maxSteps; step++) {
+    if (signal?.aborted) {
+      onDelta({ type: "status", text: "[stopped by user]" });
+      break;
+    }
+    onDelta({ type: "status", text: `[step ${step + 1}/${maxSteps}]` });
 
-    const assistant = await client.chat(messages, tools);
+    const assistant = await client.chat(messages, tools, signal);
     newMessages.push(assistant);
 
     if (assistant.tool_calls && assistant.tool_calls.length > 0) {
       onDelta({ type: "assistant", text: assistant.content ?? "" });
       messages.push(assistant);
 
-      for (const call of assistant.tool_calls) {
-        let result: string;
+      const calls = assistant.tool_calls;
+      const results: (string | undefined)[] = new Array(calls.length);
+
+      const runOne = async (i: number): Promise<string> => {
+        const call = calls[i];
         try {
           const args = JSON.parse(call.function.arguments || "{}");
-          result = await executeTool(call.function.name, args);
+          return await executeTool(call.function.name, args, toolContext);
         } catch (e: any) {
-          result = `Error executing tool: ${e?.message ?? String(e)}`;
+          return `Error executing tool: ${e?.message ?? String(e)}`;
         }
+      };
+
+      if (!signal?.aborted) {
+        const readonlyIdx: number[] = [];
+        const mutatingIdx: number[] = [];
+        calls.forEach((call, i) => {
+          (READONLY_TOOLS.has(call.function.name) ? readonlyIdx : mutatingIdx).push(i);
+        });
+
+        // Read-only calls have no side effects on each other, so run them concurrently.
+        await Promise.all(readonlyIdx.map(async (i) => { results[i] = await runOne(i); }));
+
+        // Mutating calls run one at a time, honoring a mid-batch stop request.
+        for (const i of mutatingIdx) {
+          if (signal?.aborted) {
+            break;
+          }
+          results[i] = await runOne(i);
+        }
+      }
+
+      // Reassemble tool response messages in the original call order (required by the API).
+      for (let i = 0; i < calls.length; i++) {
+        const call = calls[i];
+        if (results[i] === undefined) {
+          onDelta({ type: "status", text: "[stopped by user]" });
+          break;
+        }
+        const result = results[i] as string;
         onDelta({ type: "tool", name: call.function.name, text: result });
 
         const toolMsg: ChatMessage = {
           role: "tool",
           tool_call_id: call.id,
-          content: result,
+          content: truncateResult(result),
         };
         messages.push(toolMsg);
         newMessages.push(toolMsg);
@@ -156,3 +161,4 @@ export async function runAgent(
 
   return newMessages;
 }
+

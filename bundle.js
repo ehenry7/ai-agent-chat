@@ -14,6 +14,8 @@ var FILES = [
   "src/chatPanel.ts",
   "src/agent.ts",
   "src/apiClient.ts",
+  "media/chat-icon-dark.svg",
+  "media/chat-icon-light.svg",
   ".vscodeignore",
   ".gitignore",
   ".npmrc",

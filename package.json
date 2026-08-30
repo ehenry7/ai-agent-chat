@@ -1,9 +1,9 @@
 {
   "name": "ai-agent-chat",
   "displayName": "AI Chat",
-  "description": "Agentic AI chat for OpenAI-compatible APIs (no proxy, no TLS verification). Remote-SSH ready.",
-  "version": "0.3.0",
-  "publisher": "your-publisher",
+  "description": "Agentic AI chat for OpenAI-compatible APIs with file and shell tools. No runtime dependencies; TLS verification enabled. Remote-SSH ready.",
+  "version": "0.19.7",
+  "publisher": "Huawei",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -16,11 +16,44 @@
     "workspace"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ai-agent-chat",
+          "title": "AI Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ai-agent-chat": [
+        {
+          "type": "webview",
+          "id": "ai-agent-chat.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "aiAgentChat.open",
-        "title": "AI Agent: Open Chat",
-        "enablement": "workspaceFolderCount != 0"
+        "title": "AI Agent Chat: Open",
+        "icon": {
+          "light": "media/chat-icon-light.svg",
+          "dark": "media/chat-icon-dark.svg"
+        }
+      },
+      {
+        "command": "aiAgentChat.setApiKey",
+        "title": "AI Agent Chat: Set API Key"
+      },
+      {
+        "command": "aiAgentChat.clearApiKey",
+        "title": "AI Agent Chat: Clear API Key"
+      },
+      {
+        "command": "aiAgentChat.diagnostics",
+        "title": "AI Agent Chat: Show Diagnostics"
       }
     ],
     "configuration": {
@@ -32,16 +65,24 @@
           "description": "Base URL of the OpenAI-compatible API (e.g. https://api.openai.com/v1)",
           "scope": "resource"
         },
-        "aiAgentChat.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key",
-          "scope": "resource"
-        },
         "aiAgentChat.model": {
           "type": "string",
-          "default": "gpt-4o-mini",
-          "description": "Model name",
+          "default": "GLM-5.2-1",
+          "description": "Default model name (models can be queried from the server and switched dynamically in the chat view)",
+          "scope": "resource"
+        },
+        "aiAgentChat.webSearchUrl": {
+          "type": "string",
+          "default": "https://duckduckgo.com/html/?q=%s",
+          "description": "Search engine URL template used by the agent's web_search tool. %s is replaced with the URL-encoded query. Point this at an internal search engine if public internet access is unavailable.",
+          "scope": "resource"
+        },
+        "aiAgentChat.maxSteps": {
+          "type": "number",
+          "default": 15,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum number of agent loop steps (model calls) per chat turn before the agent stops itself.",
           "scope": "resource"
         }
       }
@@ -51,8 +92,10 @@
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "build": "node build.js",
-    "build:fast": "node build.js --skip-install",
-    "build:install": "node build.js --install"
+    "rebuild": "node build.js ",
+    "build:fast": "node build.js --no-install --skip-deps",
+    "build:no-deps": "node build.js --skip-deps",
+    "test": "tsc -p ./ && node --require ./test/register-vscode-stub.js --test out/test"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",

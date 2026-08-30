@@ -2,9 +2,15 @@
 src/**
 node_modules/**
 out/**/*.map
+out/test/**
+test/**
 *.vsix
 tsconfig.json
 **/.git/**
 **/*.ts
 *.bak*
 *.bak-tlsgit
+build*
+bundle*
+Handoff*
+project-bundle*

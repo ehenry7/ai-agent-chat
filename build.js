@@ -2,9 +2,9 @@
 /**
  * Clean build for ai-agent-chat.
  * Usage:
- *   node build.js                full clean build
+ *   node build.js                full clean build (also installs vsix into VS Code)
  *   node build.js --skip-install skip npm ci (reuse node_modules)
- *   node build.js --install      also install the vsix into VS Code
+ *   node build.js --no-install   build + package, but skip installing the vsix
  *   node build.js --help         show help
  */
 
@@ -43,14 +43,16 @@ function showHelp() {
     "    node build.js [options]\n" +
     "\n" +
     "OPTIONS\n" +
-    "    --skip-install   Skip the dependency install step (reuse node_modules).\n" +
-    "    --install        Install the packaged vsix into VS Code when done.\n" +
+    "    --skip-deps      Skip the dependency install step (reuse node_modules).\n" +
+    "    --install        (default) Install the packaged vsix into VS Code when done. Kept for compatibility.\n" +
+    "    --no-install     Build and package, but skip installing the vsix into VS Code.\n" +        
     "    --help, -h       Show this help and exit.\n" +
     "\n" +
     "EXAMPLES\n" +
     "    node build.js                    full clean build\n" +
-    "    node build.js --skip-install     fast rebuild, no dependency install\n" +
+    "    node build.js --skip-deps        fast rebuild, no dependency install\n" +
     "    node build.js --install          build, package, install into VS Code\n" +
+    "    node build.js --no-install       build, package, but skip installing the vsix into VS Code\n" +  
     "\n" +
     "NOTES\n" +
     "    - Cleans out/ and previous .vsix files (keeps node_modules).\n" +
@@ -66,8 +68,9 @@ if (args.includes("--help") || args.includes("-h")) {
   showHelp();
   process.exit(0);
 }
-const skipInstall = args.includes("--skip-install");
-const installVsix = args.includes("--install");
+const skipDeps = args.includes("--skip-deps");
+// Install the packaged vsix into VS Code by default. Use --no-install to skip it.
+const installVsix = !args.includes("--no-install");
 
 // ---- 0. preflight ----------------------------------------------------------
 
@@ -79,6 +82,32 @@ log("Checking tools");
   }
 });
 console.log("    node " + child.execSync("node -v").toString().trim() + ", npm " + child.execSync("npm -v").toString().trim());
+
+// ---- 0.5 sync readme version -----------------------------------------------
+
+log("Syncing version to README.md");
+const pkgPath = path.join(ROOT, "package.json");
+const readmePath = path.join(ROOT, "README.md");
+
+if (fs.existsSync(pkgPath) && fs.existsSync(readmePath)) {
+  const pkg = require(pkgPath);
+  const version = pkg.version;
+  const readmeContent = fs.readFileSync(readmePath, "utf8");
+  
+  const updatedReadme = readmeContent.replace(
+    /!\[Version\]\(https:\/\/img\.shields\.io\/badge\/version-[0-9A-Za-z.-]+-blue\)/g,
+    "![Version](https://img.shields.io/badge/version-" + version + "-blue)"
+  );
+  
+  if (readmeContent !== updatedReadme) {
+    fs.writeFileSync(readmePath, updatedReadme, "utf8");
+    console.log("    Updated README.md to version " + version);
+  } else {
+    console.log("    README.md already up to date (" + version + ")");
+  }
+} else {
+  console.log("    Skipped: package.json or README.md not found");
+}
 
 // ---- 1. clean --------------------------------------------------------------
 
@@ -100,8 +129,8 @@ function removeDir(dir) {
 
 // ---- 2. install ------------------------------------------------------------
 
-if (skipInstall) {
-  log("Skipping dependency install (--skip-install)");
+if (skipDeps) {
+  log("Skipping dependency install (--skip-deps)");
 } else {
   log("Installing dependencies (npm ci)");
   run("npm", ["ci", "--no-audit", "--no-fund"]);
