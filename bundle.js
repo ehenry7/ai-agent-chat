@@ -17,7 +17,9 @@ var FILES = [
   ".vscodeignore",
   ".gitignore",
   ".npmrc",
-  "LICENSE"
+  "LICENSE",
+  "build.js",
+  "build.ps1"
 ];
 
 var parts = [];   // array of strings
