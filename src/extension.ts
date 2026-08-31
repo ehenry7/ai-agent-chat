@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import { ChatViewProvider } from "./chatPanel";
 import { runAgent } from "./agent";
 import { ChatMessage, ApiClient } from "./apiClient";
+import { type ToolContext } from "./tools";
+import { parseMarkdownChecklist, type TodoItem } from "./tools/todos";
 import { showWelcomeScreen, registerSetupHandler } from "./welcome";
 
 const MAX_HISTORY = 20;
@@ -101,6 +103,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // ---- Conversation history & state ----
     const history: ChatMessage[] = [];
+    // Session-level TODO list, surfaced to the model each turn via a reminder
+    // block (see agent.ts) and mutated by the update_todo_list tool.
+    let todoList: TodoItem[] = [];
     let selectedModel = initialConfig.model;
     let currentRun: AbortController | undefined;
 
@@ -456,6 +461,42 @@ export async function activate(context: vscode.ExtensionContext) {
                     } catch (err: any) {
                         return "Error: " + String(err);
                     }
+                },
+                getTodoList: () => todoList,
+                setTodoList: (t: TodoItem[]) => { todoList = t; },
+                spawnSubTask: async (subMessage: string, subTodos?: string | null): Promise<string> => {
+                    // Seed the child's todo list from the optional markdown checklist.
+                    let childTodos: TodoItem[] = [];
+                    if (subTodos) {
+                        try {
+                            childTodos = parseMarkdownChecklist(subTodos);
+                        } catch {
+                            childTodos = [];
+                        }
+                    }
+                    const childContext: ToolContext = {
+                        getTodoList: () => childTodos,
+                        setTodoList: (t: TodoItem[]) => { childTodos = t; },
+                        compactContext: async () => "Sub-task context compaction is not available.",
+                    };
+                    const subUser: ChatMessage = { role: "user", content: subMessage };
+                    const subMaxSteps = Math.max(1, Math.min(maxSteps, 15));
+                    const subMessages = await runAgent(
+                        client,
+                        [],
+                        subUser,
+                        () => { /* child progress is surfaced via the parent tool result */ },
+                        abortController.signal,
+                        childContext,
+                        subMaxSteps,
+                    );
+                    for (let i = subMessages.length - 1; i >= 0; i--) {
+                        const m = subMessages[i];
+                        if (m.role === "assistant" && m.content) {
+                            return m.content;
+                        }
+                    }
+                    return "(sub-task produced no final answer)";
                 },
             }, maxSteps);
 

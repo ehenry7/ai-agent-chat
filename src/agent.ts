@@ -1,5 +1,6 @@
 import { ApiClient, ChatMessage } from "./apiClient";
 import { tools, executeTool, ToolContext } from "./tools";
+import { formatReminderSection } from "./tools/todos";
 
 /** Tool names that only read/query state; safe to run concurrently. Exported for tests. */
 export const READONLY_TOOLS = new Set([
@@ -77,7 +78,18 @@ export async function runAgent(
     }
     onDelta({ type: "status", text: `[step ${step + 1}/${maxSteps}]` });
 
-    const assistant = await client.chat(messages, tools, signal);
+    // Reflect the current todo list back to the model each step (mirrors the
+    // reference repo's environment_details reminder block). Injected ephemerally
+    // as a trailing user message so the persistent `messages` array stays clean
+    // and the reminder always reflects the latest list. Only injected when a
+    // non-empty todo list exists, to avoid noisy nudge spam on every step.
+    const todoList = toolContext?.getTodoList?.();
+    const reminder = todoList && todoList.length > 0 ? formatReminderSection(todoList) : "";
+    const messagesForApi: ChatMessage[] = reminder
+      ? [...messages, { role: "user", content: reminder } as ChatMessage]
+      : messages;
+
+    const assistant = await client.chat(messagesForApi, tools, signal);
     newMessages.push(assistant);
 
     if (assistant.tool_calls && assistant.tool_calls.length > 0) {
@@ -90,6 +102,11 @@ export async function runAgent(
       const runOne = async (i: number): Promise<string> => {
         const call = calls[i];
         try {
+          // new_task must be called alone (it spawns a sub-agent); reject it if
+          // the model batched it with other tools so it retries by itself.
+          if (call.function.name === "new_task" && calls.length > 1) {
+            return "Error: new_task MUST be called alone. Do not call it alongside other tools in the same turn. Retry new_task by itself in the next turn.";
+          }
           const args = parseToolArguments(call.function.arguments);
           return await executeTool(call.function.name, args, toolContext);
         } catch (e: any) {

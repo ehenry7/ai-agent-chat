@@ -1,13 +1,10 @@
-Here's the updated `README.md` with everything from this conversation folded in. I've kept the original structure and voice, expanded the Features/Usage/Project-Layout/tests sections, cleared the completed roadmap items, and fixed a few sections that had gone stale relative to the code (listed at the end so you can double-check them).
-
-````markdown
 # AI Agent Chat for VS Code
 
 An agentic chat assistant for VS Code, backed by an OpenAI-compatible
 chat-completions API. The agent can read and write files in your workspace
 and run shell commands to help you complete tasks.
 
-![Version](https://img.shields.io/badge/version-0.30.3-blue)
+![Version](https://img.shields.io/badge/version-0.30.4-blue)
 
 ---
 
@@ -41,9 +38,10 @@ and run shell commands to help you complete tasks.
   header to expand the full output, click again to collapse; replayed
   history after a view switch renders the same way. The raw webview debug
   log is likewise collapsed behind a small toggle by default.
-- **Resizable prompt box** — drag the input box's bottom edge to enlarge
-  it (minimum 2 rows, capped at 60% of the view height). The height is
-  remembered across view switches and window reloads.
+- **Resizable prompt box** — drag the resize grip at the top-right of the
+  input area (or the input box's native bottom edge) to enlarge it (minimum 2
+  rows, capped at 60% of the view height). The height is remembered across
+  view switches and window reloads.
 - **Prompt history with ↑/↓ navigation** — press ↑ with the caret on the
   first line to step back through previously submitted prompts, ↓ to step
   forward; unsent text is preserved while browsing and restored when you
@@ -240,8 +238,9 @@ stored settings at startup.
    the server, ⏱ benchmarks response time per model).
 3. Type your question in the input box and press **Enter** (or **Send**);
    **Shift+Enter** inserts a newline. Press **↑**/**↓** (caret on the
-   first/last line) to browse previously submitted prompts. Drag the
-   input box's bottom edge to resize it.
+   first/last line) to browse previously submitted prompts. Drag the resize
+   grip at the top-right of the input area (or the input box's bottom edge)
+   to resize it.
 4. The agent answers step by step and may invoke tools (file, git, web,
    or VS Code UI tools — see Features above). Assistant text renders as
    Markdown with syntax-highlighted code blocks; each tool call appears
@@ -445,15 +444,3 @@ reinstalls the `.vsix`. This README is kept in sync with each change.
 ## License
 
 MIT — see the LICENSE file in the repository root.
-````
-
-## Notes on what I changed beyond the requested updates
-
-Please sanity-check these — they were stale in the old README relative to your current code, so I corrected them:
-
-1. **API key section** — the old README still described plaintext storage in settings with "SecretStorage (planned)"; your code has SecretStorage, the setup screen, and the one-time migration. I rewrote Configuration/Security accordingly and removed `apiKey` from the settings table (it isn't declared in `package.json` anymore).
-2. **`run_command` confirmation** — it's commented out in `tools.ts`, so I changed the security note to say `delete_file`/`git_commit` prompt but `run_command` doesn't (matching your existing roadmap item).
-3. **`run_python` tool** — present in `tools.ts` but missing from the old feature list; added.
-4. **`maxSteps` default** — old README said 15 (1–50); `package.json`/`extension.ts` say 25 with wider clamping, so I documented 25 and noted the setup screen clamps to 1–50. Adjust if your intended default differs.
-5. **Version badge** — I wrote `0.32.0`; sync it (and `package.json`) to whatever you actually package next, per your convention.
-6. Also worth updating when you regenerate docs: check that `bundle.js` includes the new `src/webview/` directory and the three new test files in its file list.

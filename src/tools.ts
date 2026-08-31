@@ -7,6 +7,16 @@ import * as cp from "child_process";
 import * as util from "util";
 import { URL } from "url";
 
+import { parsePatch, processAllHunks } from "./tools/apply-patch";
+import { applyDiff } from "./tools/diff/multi-search-replace";
+import {
+  parseMarkdownChecklist,
+  validateTodos,
+  normalizeStatus,
+  type TodoItem,
+} from "./tools/todos";
+import { getCommand, getCommandNames } from "./tools/commands/commands";
+
 const exec = util.promisify(cp.exec);
 
 export const workspaceRoot = () => {
@@ -411,11 +421,135 @@ export const tools = [
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "update_todo_list",
+      description:
+        "Replace the entire TODO list with an updated checklist reflecting the current state. Always provide the full list; the system will overwrite the previous one. Use a single-level markdown checklist (no nesting) in intended execution order. Status options: [ ] (pending), [x] (completed), [-] (in progress). Use this for multi-step tasks: confirm completion of each step before marking it done, update multiple statuses at once, and add new actionable items as they are discovered.",
+      parameters: {
+        type: "object",
+        properties: {
+          todos: {
+            type: "string",
+            description:
+              "Full markdown checklist in execution order, using [ ] for pending, [x] for completed, and [-] for in progress",
+          },
+        },
+        required: ["todos"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description:
+        "Apply patches to files using a stripped-down, file-oriented diff format. Supports creating new files, deleting files, and updating existing files with precise changes in a single call.\n\nThe patch format:\n*** Begin Patch\n[ one or more file sections ]\n*** End Patch\n\nEach file section starts with one of three headers:\n- *** Add File: <path> - Create a new file. Every following line is a + line (the initial contents).\n- *** Delete File: <path> - Remove an existing file. Nothing follows.\n- *** Update File: <path> - Patch an existing file in place. May be followed by *** Move to: <new path> to rename, then one or more hunks each introduced by @@ (optionally followed by context like a class or function name). Within a hunk each line starts with ' ' (context/unchanged), '-' (remove), or '+' (add). Show 3 lines of context above and below each change; use @@ with a class/function name if 3 lines is insufficient to uniquely identify the location.",
+      parameters: {
+        type: "object",
+        properties: {
+          patch: {
+            type: "string",
+            description:
+              "The complete patch text in the apply_patch format, starting with '*** Begin Patch' and ending with '*** End Patch'.",
+          },
+        },
+        required: ["patch"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_diff",
+      description:
+        "Apply precise, targeted modifications to an existing file using one or more search/replace blocks. This tool is for surgical edits only; the SEARCH block must match the existing content, including whitespace and indentation. To make multiple targeted changes, provide multiple SEARCH/REPLACE blocks in the 'diff' parameter. Use read_file first if you are not confident in the exact content to search for.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "The path of the file to modify, relative to the current workspace directory.",
+          },
+          diff: {
+            type: "string",
+            description:
+              "One or more search/replace blocks. Each block must follow this format:\n<<<<<<< SEARCH\n:start_line:[line_number]\n-------\n[exact content to find]\n=======\n[new content to replace with]\n>>>>>>> REPLACE",
+          },
+        },
+        required: ["path", "diff"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_replace",
+      description:
+        "Replace ONE occurrence of old_string with new_string in an existing file. The old_string MUST uniquely identify the specific instance: include at least 3-5 lines of context before AND after the change point, and match all whitespace and indentation exactly. This tool changes a single instance at a time; for multiple instances make separate calls, each with enough context to be unique. old_string and new_string must be different.",
+      parameters: {
+        type: "object",
+        properties: {
+          file_path: { type: "string", description: "The path to the file (relative to the workspace or absolute)." },
+          old_string: {
+            type: "string",
+            description: "The text to replace (must be unique within the file and match exactly, including whitespace and indentation).",
+          },
+          new_string: { type: "string", description: "The edited text to replace the old_string (must differ from old_string)." },
+        },
+        required: ["file_path", "old_string", "new_string"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_slash_command",
+      description:
+        "Execute a slash command to get specific instructions or content. Slash commands are predefined templates (built-in, global, or project-scoped) that provide detailed guidance for common tasks. The command's content is returned as the tool result and injected into the conversation for you to act on.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Name of the slash command to run (e.g. init)." },
+          args: { type: "string", description: "Optional additional context or arguments for the command." },
+        },
+        required: ["command"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "new_task",
+      description:
+        "Create a new sub-agent task with your provided message and optional initial todo list. Use this to delegate a self-contained subtask and receive the sub-agent's result. CRITICAL: this tool MUST be called alone - do NOT call it alongside other tools in the same turn.",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: { type: "string", description: "Slug of the mode to begin the new task in (e.g. code, debug, architect). Currently advisory." },
+          message: { type: "string", description: "Initial user instructions or context for the new task." },
+          todos: { type: "string", description: "Optional initial todo list as a markdown checklist." },
+        },
+        required: ["mode", "message"],
+      },
+    },
+  },
 ];
 
 /** Optional hooks the extension host can supply to give tools access to session state. */
 export interface ToolContext {
   compactContext?: () => Promise<string>;
+  /** Read the current session todo list (for update_todo_list / reminder injection). */
+  getTodoList?: () => TodoItem[];
+  /** Replace the session todo list. */
+  setTodoList?: (todos: TodoItem[]) => void;
+  /**
+   * Spawn a sub-agent (new_task) with the given message and optional initial
+   * markdown todo list; resolves to the sub-agent's final assistant text.
+   * Wired by extension.ts to a nested runAgent call.
+   */
+  spawnSubTask?: (message: string, todos?: string | null) => Promise<string>;
 }
 
 /** Pure path-containment check, exported for unit testing (no vscode dependency). */
@@ -1041,6 +1175,231 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
           return "Error: compact_context is not available in this context.";
         }
         return await ctx.compactContext();
+      }
+      case "update_todo_list": {
+        const todosRaw = String(args.todos ?? "");
+        let parsed: TodoItem[];
+        try {
+          parsed = parseMarkdownChecklist(todosRaw);
+        } catch (e: any) {
+          return `Error: the todos parameter is not a valid markdown checklist: ${e?.message ?? String(e)}`;
+        }
+        const { valid, error } = validateTodos(parsed);
+        if (!valid) {
+          return `Error: ${error || "todos parameter validation failed"}`;
+        }
+        const normalized: TodoItem[] = parsed.map((t) => ({
+          id: t.id,
+          content: t.content,
+          status: normalizeStatus(t.status),
+        }));
+        if (ctx?.setTodoList) {
+          ctx.setTodoList(normalized);
+        }
+        return "Todo list updated successfully.";
+      }
+      case "apply_patch": {
+        const patch = String(args.patch ?? "");
+        if (!patch) {
+          return "Error: patch is required";
+        }
+        let parsedPatch: ReturnType<typeof parsePatch>;
+        try {
+          parsedPatch = parsePatch(patch);
+        } catch (e: any) {
+          return `Error parsing patch: ${e?.message ?? String(e)}`;
+        }
+        const root = workspaceRoot().fsPath;
+        const readFile = async (relPath: string): Promise<string> => {
+          const abs = resolvePathInRoot(root, relPath);
+          return fs.readFileSync(abs, "utf8");
+        };
+        let changes;
+        try {
+          changes = await processAllHunks(parsedPatch.hunks, readFile);
+        } catch (e: any) {
+          return `Error applying patch: ${e?.message ?? String(e)}`;
+        }
+        const summary: string[] = [];
+        for (const change of changes) {
+          try {
+            const abs = resolvePathInRoot(root, change.path);
+            if (change.type === "add") {
+              if (fs.existsSync(abs)) {
+                summary.push(`Error: ${change.path} already exists; use Update File instead.`);
+                continue;
+              }
+              fs.mkdirSync(path.dirname(abs), { recursive: true });
+              fs.writeFileSync(abs, String(change.newContent ?? ""), "utf8");
+              summary.push(`Added ${change.path}`);
+            } else if (change.type === "delete") {
+              if (!fs.existsSync(abs)) {
+                summary.push(`Error: ${change.path} not found; cannot delete.`);
+                continue;
+              }
+              fs.rmSync(abs, { recursive: false });
+              summary.push(`Deleted ${change.path}`);
+            } else if (change.type === "update") {
+              if (!fs.existsSync(abs)) {
+                summary.push(`Error: ${change.path} not found; cannot update.`);
+                continue;
+              }
+              if (change.movePath) {
+                const moveAbs = resolvePathInRoot(root, change.movePath);
+                fs.mkdirSync(path.dirname(moveAbs), { recursive: true });
+                fs.writeFileSync(moveAbs, String(change.newContent ?? ""), "utf8");
+                fs.rmSync(abs, { recursive: false });
+                summary.push(`Updated and moved ${change.path} -> ${change.movePath}`);
+              } else {
+                fs.writeFileSync(abs, String(change.newContent ?? ""), "utf8");
+                summary.push(`Updated ${change.path}`);
+              }
+            }
+          } catch (e: any) {
+            summary.push(`Error: ${change.path}: ${e?.message ?? String(e)}`);
+          }
+        }
+        return summary.length > 0 ? summary.join("\n") : "Patch applied (no file changes).";
+      }
+      case "apply_diff": {
+        const relPath = String(args.path ?? "");
+        if (!relPath) {
+          return "Error: path is required";
+        }
+        const diffContent = String(args.diff ?? "");
+        if (!diffContent) {
+          return "Error: diff is required";
+        }
+        let abs: string;
+        try {
+          abs = resolveInWorkspace(relPath);
+        } catch (e: any) {
+          return `Error: ${e?.message ?? String(e)}`;
+        }
+        if (!fs.existsSync(abs)) {
+          return `Error: File not found: ${relPath}`;
+        }
+        const originalContent = fs.readFileSync(abs, "utf8");
+        const result = await applyDiff(originalContent, diffContent, 1.0);
+        if (!result.success) {
+          const errs =
+            result.failParts && result.failParts.length
+              ? result.failParts.map((p, i) => `Block ${i + 1}: ${p.error}`).join("\n\n")
+              : result.error || "Unknown error";
+          return `apply_diff failed; no changes written.\n${errs}`;
+        }
+        fs.writeFileSync(abs, String(result.content), "utf8");
+        let msg = `Applied diff to ${relPath}.`;
+        if (result.failParts && result.failParts.length > 0) {
+          msg +=
+            `\n${result.failParts.length} block(s) failed:\n` +
+            result.failParts.map((p, i) => `Block ${i + 1}: ${p.error}`).join("\n\n");
+        }
+        return msg;
+      }
+      case "search_replace": {
+        const relPath = String(args.file_path ?? "");
+        if (!relPath) {
+          return "Error: file_path is required";
+        }
+        const oldString = String(args.old_string ?? "");
+        const newString = args.new_string === undefined ? undefined : String(args.new_string);
+        if (!oldString) {
+          return "Error: old_string is required";
+        }
+        if (newString === undefined) {
+          return "Error: new_string is required";
+        }
+        if (oldString === newString) {
+          return "Error: old_string and new_string must be different.";
+        }
+        let abs: string;
+        try {
+          abs = resolveInWorkspace(relPath);
+        } catch (e: any) {
+          return `Error: ${e?.message ?? String(e)}`;
+        }
+        if (!fs.existsSync(abs)) {
+          return `Error: File not found: ${relPath}`;
+        }
+        const originalRaw = fs.readFileSync(abs, "utf8");
+        const isCrlf = originalRaw.includes("\r\n");
+        const fileContent = originalRaw.replace(/\r\n/g, "\n");
+        const normOld = oldString.replace(/\r\n/g, "\n");
+        const normNew = newString.replace(/\r\n/g, "\n");
+        const matchCount = fileContent.split(normOld).length - 1;
+        if (matchCount === 0) {
+          return "Error: No match found for old_string. Ensure it matches the file contents exactly, including whitespace and indentation.";
+        }
+        if (matchCount > 1) {
+          return `Error: Found ${matchCount} matches for old_string. This tool replaces ONE occurrence at a time. Provide more context (3-5 lines before and after) to uniquely identify the instance.`;
+        }
+        let newContent = fileContent.replace(normOld, normNew);
+        if (newContent === fileContent) {
+          return `No changes needed for ${relPath}`;
+        }
+        if (isCrlf) {
+          newContent = newContent.replace(/\n/g, "\r\n");
+        }
+        fs.writeFileSync(abs, newContent, "utf8");
+        return `Replaced 1 occurrence in ${relPath}`;
+      }
+      case "run_slash_command": {
+        const cmdName = String(args.command ?? "");
+        if (!cmdName) {
+          return "Error: command is required";
+        }
+        const cmdArgs = args.args != null ? String(args.args) : undefined;
+        const cwd = workspaceRoot().fsPath;
+        let command;
+        try {
+          command = await getCommand(cwd, cmdName);
+        } catch (e: any) {
+          return `Error loading command '${cmdName}': ${e?.message ?? String(e)}`;
+        }
+        if (!command) {
+          let names: string[] = [];
+          try {
+            names = await getCommandNames(cwd);
+          } catch {
+            names = [];
+          }
+          return `Command '${cmdName}' not found. Available commands: ${names.length ? names.join(", ") : "(none)"}`;
+        }
+        const lines = [`Command: /${command.name}`];
+        if (command.description) {
+          lines.push(`Description: ${command.description}`);
+        }
+        if (command.argumentHint) {
+          lines.push(`Argument hint: ${command.argumentHint}`);
+        }
+        if (cmdArgs) {
+          lines.push(`Provided arguments: ${cmdArgs}`);
+        }
+        lines.push(`Source: ${command.source}`);
+        lines.push("--- Command Content ---");
+        lines.push(command.content);
+        return lines.join("\n");
+      }
+      case "new_task": {
+        const mode = String(args.mode ?? "");
+        const message = String(args.message ?? "");
+        if (!mode) {
+          return "Error: mode is required";
+        }
+        if (!message) {
+          return "Error: message is required";
+        }
+        const todos = args.todos != null ? String(args.todos) : undefined;
+        if (!ctx?.spawnSubTask) {
+          return "Error: new_task is not available in this context (no sub-agent runner).";
+        }
+        try {
+          const childResult = await ctx.spawnSubTask(message, todos);
+          return `Sub-task (mode: ${mode}) completed.\n\n${childResult}`;
+        } catch (e: any) {
+          return `Error spawning sub-task: ${e?.message ?? String(e)}`;
+        }
       }
       default:
         return `Unknown tool: ${name}`;

@@ -81,9 +81,12 @@ export function buildWebviewHtml(opts: WebviewHtmlOptions): string {
     htmlParts.push('<div id="debug"><div class="dbg">[debug log - will fill if script runs]</div></div>');
     htmlParts.push('</div>');
     htmlParts.push('<div id="inputArea">');
+    htmlParts.push('<div id="inputGrip" title="Drag to resize input box"></div>');
     htmlParts.push('<textarea id="input" rows="2" placeholder="Ask the agent... (↑/↓ history)"></textarea>');
-    htmlParts.push('<button id="send">Send</button>');
-    htmlParts.push('<button id="stop" disabled title="Stop the current agent run">Stop</button>');
+    htmlParts.push('<div id="sendStopStack">');
+    htmlParts.push('<button id="send" title="Send message (Enter)">\u27A4</button>');
+    htmlParts.push('<button id="stop" disabled title="Stop the current agent run">\u25A0</button>');
+    htmlParts.push('</div>');
     htmlParts.push("</div>");
     htmlParts.push('<script nonce="' + opts.nonce + '">');
     htmlParts.push(script);

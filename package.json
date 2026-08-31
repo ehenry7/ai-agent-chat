@@ -2,7 +2,7 @@
   "name": "ai-agent-chat",
   "displayName": "AI Chat",
   "description": "Agentic AI chat for OpenAI-compatible APIs with file and shell tools. No runtime dependencies; TLS verification enabled. Remote-SSH ready.",
-  "version": "0.30.3",
+  "version": "0.30.4",
   "publisher": "Huawei",
   "engines": {
     "vscode": "^1.85.0"
