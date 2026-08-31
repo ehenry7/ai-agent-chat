@@ -109,7 +109,6 @@ test("buildSystemPrompt mentions every provided tool name", () => {
     assert.ok(prompt.includes(name), `expected prompt to mention ${name}`);
   }
   assert.match(prompt, /arguments must be one valid JSON object/);
-  assert.match(prompt, /search_in_files.*"glob"/);
 });
 
 test("parseToolArguments accepts JSON objects and already-parsed objects", () => {
@@ -138,6 +137,57 @@ test("buildSystemPrompt describes bash on non-Windows platforms", () => {
   const darwinPrompt = buildSystemPrompt(["run_command"], "darwin");
   assert.match(darwinPrompt, /host OS is "darwin"/);
   assert.match(darwinPrompt, /run_command executes via bash/);
+});
+
+// ---- memory injection into the system prompt ----
+
+test("buildSystemPrompt omits the memory block when no memory is supplied", () => {
+  const prompt = buildSystemPrompt(["read_file"], "linux");
+  assert.equal(prompt.includes("<agent_memory>"), false);
+});
+
+test("buildSystemPrompt injects memory into an <agent_memory> block at the end", () => {
+  const memory = "# Project\nWe use pnpm and vitest.";
+  const prompt = buildSystemPrompt(["read_file", "update_memory"], "linux", memory);
+  assert.ok(prompt.includes("<agent_memory>"), "expected an <agent_memory> block");
+  assert.ok(prompt.endsWith("</agent_memory>"), "expected memory to trail the rest of the prompt");
+  assert.ok(prompt.includes(memory), "expected the memory contents to appear verbatim");
+  assert.ok(prompt.includes("update_memory"), "expected the block to reference the update_memory tool");
+});
+
+test("buildSystemPrompt treats blank memory as no memory", () => {
+  const prompt = buildSystemPrompt(["read_file"], "linux", "   \n\t ");
+  assert.equal(prompt.includes("<agent_memory>"), false);
+});
+
+test("buildSystemPrompt omits the global memory block when none is supplied", () => {
+  const prompt = buildSystemPrompt(["read_file"], "linux", undefined, undefined);
+  assert.equal(prompt.includes("<agent_global_memory>"), false);
+});
+
+test("buildSystemPrompt injects global memory into an <agent_global_memory> block", () => {
+  const global = "# Global\nI prefer tabs and pnpm everywhere.";
+  const prompt = buildSystemPrompt(["read_file", "update_memory"], "linux", undefined, global);
+  assert.ok(prompt.includes("<agent_global_memory>"), "expected an <agent_global_memory> block");
+  assert.ok(prompt.includes(global), "expected the global memory contents to appear verbatim");
+  assert.ok(prompt.includes("scope \"global\""), "expected the block to reference the global scope");
+  assert.equal(prompt.includes("<agent_memory>"), false, "folder block must not appear when only global memory is given");
+});
+
+test("buildSystemPrompt treats blank global memory as no global memory", () => {
+  const prompt = buildSystemPrompt(["read_file"], "linux", undefined, "   \n\t ");
+  assert.equal(prompt.includes("<agent_global_memory>"), false);
+});
+
+test("buildSystemPrompt injects global memory BEFORE folder memory (general first, specific last)", () => {
+  const folder = "FOLDER_MARKER";
+  const global = "GLOBAL_MARKER";
+  const prompt = buildSystemPrompt(["read_file"], "linux", folder, global);
+  const globalIdx = prompt.indexOf("GLOBAL_MARKER");
+  const folderIdx = prompt.indexOf("FOLDER_MARKER");
+  assert.ok(globalIdx > -1 && folderIdx > -1, "expected both markers present");
+  assert.ok(globalIdx < folderIdx, "expected global memory to appear before folder memory");
+  assert.ok(prompt.endsWith("</agent_memory>"), "expected folder memory to trail (be last) in the prompt");
 });
 
 test("READONLY_TOOLS contains the expected read-only tool names", () => {

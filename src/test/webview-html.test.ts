@@ -32,7 +32,7 @@ test("webview script parts declare shared ids used by the protocol", () => {
         lightIconUri: "l",
         darkIconUri: "d",
     });
-    for (const id of ["modelSelect", "refreshModels", "timeModels", "compactBtn", "settingsBtn",
+    for (const id of ["modelSelect", "actionMenu",
         "setupOverlay", "debugToggle", "messages", "input", "send", "stop"]) {
         assert.ok(html.includes('id="' + id + '"'), "missing element #" + id);
     }

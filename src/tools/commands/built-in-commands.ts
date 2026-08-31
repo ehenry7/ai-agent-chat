@@ -1,17 +1,22 @@
 import { Command } from "./commands"
 
 interface BuiltInCommandDefinition {
-	name: string
-	description: string
-	argumentHint?: string
-	content: string
+  name: string
+  description: string
+  argumentHint?: string
+  content: string
 }
 
 const BUILT_IN_COMMANDS: Record<string, BuiltInCommandDefinition> = {
-	init: {
-		name: "init",
-		description: "Analyze codebase and create concise AGENTS.md files for AI assistants",
-		content: `<task>
+  config: {
+    name: "config",
+    description: "Display current workspace and AI agent configuration",
+    content: "Display configuration",
+  },
+  init: {
+    name: "init",
+    description: "Analyze codebase and create concise AGENTS.md files for AI assistants",
+    content: `<task>
 Please analyze this codebase and create an AGENTS.md file containing:
 1. Build/lint/test commands - especially for running a single test
 2. Code style guidelines including imports, formatting, types, naming conventions, error handling, etc.
@@ -42,10 +47,10 @@ Please analyze this codebase and create an AGENTS.md file containing:
     1. Check for existing AGENTS.md files
        CRITICAL - Check these EXACT paths IN THE PROJECT ROOT:
        - AGENTS.md (in project root directory)
-       - .roo/rules-code/AGENTS.md (relative to project root)
-       - .roo/rules-debug/AGENTS.md (relative to project root)
-       - .roo/rules-ask/AGENTS.md (relative to project root)
-       - .roo/rules-architect/AGENTS.md (relative to project root)
+       - rules-code/AGENTS.md (relative to project root)
+       - rules-debug/AGENTS.md (relative to project root)
+       - rules-ask/AGENTS.md (relative to project root)
+       - rules-architect/AGENTS.md (relative to project root)
        
        IMPORTANT: All paths are relative to the project/workspace root, NOT system root!
        
@@ -58,7 +63,7 @@ Please analyze this codebase and create an AGENTS.md file containing:
        - Then add any new non-obvious patterns you discover
        
        Also check for other AI assistant rules:
-       - .cursorrules, CLAUDE.md, .roorules
+       - .cursorrules, CLAUDE.md, .rules-code, .rules-debug, .rules-ask, .rules-architect
        - .cursor/rules/, .github/copilot-instructions.md
     
     2. Identify stack
@@ -95,7 +100,7 @@ Please analyze this codebase and create an AGENTS.md file containing:
          * Then add newly discovered non-obvious patterns
          * Result should be SHORTER and MORE FOCUSED than before
        - If creating new: Follow the non-obvious-only principle
-       - Create mode-specific files in .roo/rules-*/ directories (IN PROJECT ROOT)
+       - Create mode-specific files in rules-*/ directories (IN PROJECT ROOT)
        
     Note: If update_todo_list is not available, proceed with the analysis workflow directly without creating a todo list.
   </todo_list_creation>
@@ -107,12 +112,12 @@ Please analyze this codebase and create an AGENTS.md file containing:
   1. **Discovery Phase**:
      CRITICAL - First check for existing AGENTS.md files at these EXACT locations IN PROJECT ROOT:
      - AGENTS.md (in project/workspace root)
-     - .roo/rules-code/AGENTS.md (relative to project root)
-     - .roo/rules-debug/AGENTS.md (relative to project root)
-     - .roo/rules-ask/AGENTS.md (relative to project root)
-     - .roo/rules-architect/AGENTS.md (relative to project root)
+     - rules-code/AGENTS.md (relative to project root)
+     - rules-debug/AGENTS.md (relative to project root)
+     - rules-ask/AGENTS.md (relative to project root)
+     - rules-architect/AGENTS.md (relative to project root)
      
-     IMPORTANT: The .roo folder should be created in the PROJECT ROOT, not system root!
+     IMPORTANT: The rules-*/ folders should be created in the PROJECT ROOT, not system root!
      
      If found, perform CRITICAL analysis:
      - What information is OBVIOUS and must be DELETED?
@@ -170,12 +175,12 @@ Please analyze this codebase and create an AGENTS.md file containing:
     Create or deeply improve mode-specific AGENTS.md files IN THE PROJECT ROOT.
     
     CRITICAL: For each of these paths (RELATIVE TO PROJECT ROOT), check if the file exists FIRST:
-    - .roo/rules-code/AGENTS.md (create .roo in project root, not system root!)
-    - .roo/rules-debug/AGENTS.md (relative to project root)
-    - .roo/rules-ask/AGENTS.md (relative to project root)
-    - .roo/rules-architect/AGENTS.md (relative to project root)
+    - rules-code/AGENTS.md (create rules-code in project root, not system root!)
+    - rules-debug/AGENTS.md (relative to project root)
+    - rules-ask/AGENTS.md (relative to project root)
+    - rules-architect/AGENTS.md (relative to project root)
     
-    IMPORTANT: The .roo directory must be created in the current project/workspace root directory,
+    IMPORTANT: The rules-*/ directories must be created in the current project/workspace root directory,
     NOT at the system root (/) or home directory. All paths are relative to where the project is located.
     
     If files exist:
@@ -236,43 +241,244 @@ Please analyze this codebase and create an AGENTS.md file containing:
 </quality_criteria>
 
 Remember: The goal is to create documentation that enables AI assistants to be immediately productive in this codebase, focusing on project-specific knowledge that isn't obvious from the code structure alone.`,
-	},
+  },
+  help: {
+    name: "help",
+    description: "List all available commands with descriptions",
+    content: `List all available slash commands in this workspace, including:
+- Project-specific commands (from .ai-agent-chat/commands/)
+- Global commands (from ~/.ai-agent-chat/commands/)
+- Built-in commands (config, init, and others)
+
+For each command, show its name, description, and optional argument hint.
+Format as a table with columns: Command | Source | Description | Arguments`,
+  },
+  status: {
+    name: "status",
+    description: "Show agent status and system diagnostics",
+    argumentHint: "[full] for detailed output",
+    content: `Provide a comprehensive status report including:
+
+1. **Agent Status**
+   - Current step count and max steps limit
+   - Active task/plan if any
+   - Session message count
+
+2. **Memory Status**
+   - Folder memory (AGENTS.md) byte size and line count
+   - Global memory (GLOBAL_AGENTS.md) byte size and line count
+   - Warnings if approaching 64KB limit
+
+3. **Workspace Status**
+   - Workspace root path
+   - Git branch (if in repo)
+   - Uncommitted changes count
+   - Files with diagnostics (errors/warnings count)
+
+4. **Extension Configuration**
+   - Base URL and model
+   - API key status (set/missing)
+   - Max steps setting`,
+  },
+  memory: {
+    name: "memory",
+    description: "Display current memory files (both folder and global scopes)",
+    argumentHint: "[scope] - 'folder', 'global', or 'both' (default)",
+    content: `Display the contents of the memory files with analysis:
+
+1. **Folder Memory** (AGENTS.md - project-specific)
+   - Full contents of the file
+   - Line count and byte size
+   - Last modified date
+
+2. **Global Memory** (GLOBAL_AGENTS.md - cross-project)
+   - Full contents of the file
+   - Line count and byte size
+   - Last modified date
+
+3. **Analysis**
+   - What each scope contains
+   - Whether memory is being effectively used
+   - Recommendations for organization`,
+  },
+  "git-status": {
+    name: "git-status",
+    description: "Show git repository status and branch information",
+    argumentHint: "[log-count] - number of recent commits to show (default: 5)",
+    content: `Display git repository status including:
+
+1. **Current Branch**
+   - Branch name
+   - Tracking branch (if set)
+
+2. **Changes**
+   - Staged files (ready to commit)
+   - Unstaged changes (modified files)
+   - Untracked files
+
+3. **Recent Commits**
+   - Last 5 commits (or specified number)
+   - Author and commit message
+   - Time ago
+
+4. **Repository Status**
+   - Clean/dirty status
+   - Ahead/behind upstream (if tracking)`,
+  },
+  analyze: {
+    name: "analyze",
+    description: "Analyze codebase structure and key components",
+    argumentHint: "[path] - optional specific directory to analyze",
+    content: `Provide a codebase analysis including:
+
+1. **Project Structure**
+   - Main directories and their purposes
+   - Key entry points (src/extension.ts, src/agent.ts, etc.)
+   - File organization overview
+
+2. **Key Components**
+   - Major modules and their responsibilities
+   - Dependencies between components
+   - File counts and line counts per module
+
+3. **Statistics**
+   - Total files and lines of code
+   - Largest files
+   - Test file overview
+
+4. **Architecture Pattern**
+   - Is it monolithic or modular?
+   - Main data flow
+   - Key abstractions`,
+  },
+  diagnostics: {
+    name: "diagnostics",
+    description: "Show workspace diagnostics (errors and warnings)",
+    argumentHint: "[severity] - 'error', 'warning', or 'all' (default)",
+    content: `Display TypeScript and workspace diagnostics:
+
+1. **Errors** (prevent compilation)
+   - File path and line number
+   - Error message
+   - Brief context
+
+2. **Warnings** (potential issues)
+   - File path and line number
+   - Warning message
+   - Suggested fix if available
+
+3. **Summary**
+   - Total errors and warnings
+   - Files with issues
+   - Severity breakdown
+
+4. **Recommendations**
+   - High-priority issues to fix
+   - Common patterns in errors`,
+  },
+  review: {
+    name: "review",
+    description: "Code review checklist and guidelines for this project",
+    argumentHint: "[file-path] - specific file to review",
+    content: `Structured code review guidance including:
+
+1. **Style Consistency**
+   - Indentation rules (4-space in core files, tabs in src/tools/commands/)
+   - Semicolon usage
+   - Template literal restrictions (none in webview code)
+   - Line length limits
+
+2. **Type Safety**
+   - TypeScript strict mode compliance
+   - Proper error handling
+   - No unsafe type assertions
+
+3. **Testing**
+   - Tests exist for new code
+   - Existing tests still pass
+   - Edge cases covered
+
+4. **Architecture**
+   - Follows existing patterns
+   - Path operations use resolveInWorkspace
+   - Destructive operations guarded with confirmations
+
+5. **Documentation**
+   - Complex functions documented
+   - Non-obvious behavior explained
+   - Public APIs have comments
+
+6. **Performance**
+   - Large outputs truncated via truncateToolOutput
+   - Read-only tools used concurrently`,
+  },
+  workspace: {
+    name: "workspace",
+    description: "Show workspace structure and organization",
+    argumentHint: "[depth] - directory tree depth to show (default: 3)",
+    content: `Display workspace structure and information:
+
+1. **Workspace Root**
+   - Root path
+   - Type (is it a git repo?)
+
+2. **Directory Structure**
+   - Tree view with common directories highlighted
+   - Purpose of each major directory
+   - File count per directory
+
+3. **Key Files**
+   - package.json (name, version, key scripts)
+   - tsconfig.json (compiler settings)
+   - .gitignore (what's ignored)
+   - Configuration files
+
+4. **Statistics**
+   - Total files
+   - Source files vs tests vs docs
+   - Approximate total lines of code
+
+5. **Organization**
+   - Is structure clear and logical?
+   - Are naming conventions consistent?
+   - Any unusual or non-standard patterns?`,
+  },
 }
 
 /**
  * Get all built-in commands as Command objects
  */
 export async function getBuiltInCommands(): Promise<Command[]> {
-	return Object.values(BUILT_IN_COMMANDS).map((cmd) => ({
-		name: cmd.name,
-		content: cmd.content,
-		source: "built-in" as const,
-		filePath: `<built-in:${cmd.name}>`,
-		description: cmd.description,
-		argumentHint: cmd.argumentHint,
-	}))
+  return Object.values(BUILT_IN_COMMANDS).map((cmd) => ({
+    name: cmd.name,
+    content: cmd.content,
+    source: "built-in" as const,
+    filePath: `<built-in:${cmd.name}>`,
+    description: cmd.description,
+    argumentHint: cmd.argumentHint,
+  }))
 }
 
 /**
  * Get a specific built-in command by name
  */
 export async function getBuiltInCommand(name: string): Promise<Command | undefined> {
-	const cmd = BUILT_IN_COMMANDS[name]
-	if (!cmd) return undefined
+  const cmd = BUILT_IN_COMMANDS[name]
+  if (!cmd) return undefined
 
-	return {
-		name: cmd.name,
-		content: cmd.content,
-		source: "built-in" as const,
-		filePath: `<built-in:${name}>`,
-		description: cmd.description,
-		argumentHint: cmd.argumentHint,
-	}
+  return {
+    name: cmd.name,
+    content: cmd.content,
+    source: "built-in" as const,
+    filePath: `<built-in:${name}>`,
+    description: cmd.description,
+    argumentHint: cmd.argumentHint,
+  }
 }
 
 /**
  * Get names of all built-in commands
  */
 export async function getBuiltInCommandNames(): Promise<string[]> {
-	return Object.keys(BUILT_IN_COMMANDS)
+  return Object.keys(BUILT_IN_COMMANDS)
 }

@@ -279,3 +279,206 @@ test("compact_context errors when no ToolContext is supplied", async () => {
   const result = await executeTool("compact_context", {});
   assert.equal(result, "Error: compact_context is not available in this context.");
 });
+
+// ---- update_memory ----
+
+test("update_memory calls setMemory and reports the byte size of the new contents", async () => {
+  let captured = "<not called>";
+  const result = await executeTool("update_memory", { content: "# Notes\nUse pnpm." }, {
+    getMemory: () => "",
+    setMemory: (c: string) => {
+      captured = c;
+    },
+  });
+  assert.match(result, /Memory file updated \(\d+ bytes\)\./);
+  assert.equal(captured, "# Notes\nUse pnpm.");
+});
+
+test("update_memory reports the byte count (not the char count) for multi-byte content", async () => {
+  const content = "é"; // U+00E9 -> 2 bytes in UTF-8, 1 char
+  let captured = "<not called>";
+  const result = await executeTool("update_memory", { content }, {
+    getMemory: () => "",
+    setMemory: (c: string) => {
+      captured = c;
+    },
+  });
+  assert.equal(result, `Memory file updated (${Buffer.byteLength(content, "utf8")} bytes).`);
+  assert.equal(captured, content);
+});
+
+test("update_memory allows an empty string (to clear memory)", async () => {
+  let captured = "<not called>";
+  const result = await executeTool("update_memory", { content: "" }, {
+    getMemory: () => "old notes",
+    setMemory: (c: string) => {
+      captured = c;
+    },
+  });
+  assert.match(result, /Memory file updated \(0 bytes\)\./);
+  assert.equal(captured, "");
+});
+
+test("update_memory requires the content field", async () => {
+  const result = await executeTool("update_memory", {}, {
+    getMemory: () => "",
+    setMemory: () => {},
+  });
+  assert.equal(result, "Error: content is required");
+});
+
+test("update_memory rejects a null content argument", async () => {
+  const result = await executeTool("update_memory", { content: null }, {
+    getMemory: () => "",
+    setMemory: () => {},
+  });
+  assert.equal(result, "Error: content is required");
+});
+
+test("update_memory errors when no memory store is supplied (no ToolContext)", async () => {
+  const result = await executeTool("update_memory", { content: "notes" });
+  assert.equal(result, "Error: update_memory is not available in this context (no memory store).");
+});
+
+test("update_memory errors when ToolContext lacks setMemory", async () => {
+  const result = await executeTool("update_memory", { content: "notes" }, {
+    getMemory: () => "",
+  });
+  assert.equal(result, "Error: update_memory is not available in this context (no memory store).");
+});
+
+test("update_memory reports the error message if setMemory throws", async () => {
+  const result = await executeTool("update_memory", { content: "notes" }, {
+    getMemory: () => "",
+    setMemory: () => {
+      throw new Error("disk full");
+    },
+  });
+  assert.match(result, /Error updating memory: disk full/);
+});
+
+test("update_memory is NOT a read-only tool", async () => {
+  const { READONLY_TOOLS } = await import("../agent");
+  assert.ok(!READONLY_TOOLS.has("update_memory"), "update_memory mutates state and must not be read-only");
+});
+
+// ---- update_memory scope (folder vs global) ----
+
+test("update_memory with scope \"global\" calls setGlobalMemory and reports global bytes", async () => {
+  let folderCalled = false;
+  let globalCalled = "<not called>";
+  const result = await executeTool("update_memory", { content: "# Global notes", scope: "global" }, {
+    getMemory: () => "",
+    setMemory: () => { folderCalled = true; },
+    getGlobalMemory: () => "",
+    setGlobalMemory: (c: string) => { globalCalled = c; },
+  });
+  assert.equal(result, `Global memory file updated (${Buffer.byteLength("# Global notes", "utf8")} bytes).`);
+  assert.equal(globalCalled, "# Global notes");
+  assert.equal(folderCalled, false, "scope global must NOT touch folder memory");
+});
+
+test("update_memory defaults to folder scope when scope is omitted", async () => {
+  let globalCalled = false;
+  let folderCalled = "<not called>";
+  const result = await executeTool("update_memory", { content: "# Folder notes" }, {
+    getMemory: () => "",
+    setMemory: (c: string) => { folderCalled = c; },
+    getGlobalMemory: () => "",
+    setGlobalMemory: () => { globalCalled = true; },
+  });
+  assert.match(result, /^Memory file updated \(\d+ bytes\)\./);
+  assert.equal(folderCalled, "# Folder notes");
+  assert.equal(globalCalled, false, "default scope must NOT touch global memory");
+});
+
+test("update_memory treats scope \"folder\" explicitly as folder scope", async () => {
+  let globalCalled = false;
+  let folderCalled = "<not called>";
+  const result = await executeTool("update_memory", { content: "f", scope: "folder" }, {
+    getMemory: () => "",
+    setMemory: (c: string) => { folderCalled = c; },
+    getGlobalMemory: () => "",
+    setGlobalMemory: () => { globalCalled = true; },
+  });
+  assert.match(result, /^Memory file updated \(\d+ bytes\)\./);
+  assert.equal(folderCalled, "f");
+  assert.equal(globalCalled, false);
+});
+
+test("update_memory is case-insensitive for the scope (\"GLOBAL\" -> global)", async () => {
+  let globalCalled = "<not called>";
+  const result = await executeTool("update_memory", { content: "g", scope: "GLOBAL" }, {
+    getMemory: () => "",
+    setMemory: () => {},
+    getGlobalMemory: () => "",
+    setGlobalMemory: (c: string) => { globalCalled = c; },
+  });
+  assert.match(result, /^Global memory file updated \(\d+ bytes\)\./);
+  assert.equal(globalCalled, "g");
+});
+
+test("update_memory treats an unrecognized scope as folder", async () => {
+  let globalCalled = false;
+  let folderCalled = "<not called>";
+  const result = await executeTool("update_memory", { content: "f", scope: "bogus" }, {
+    getMemory: () => "",
+    setMemory: (c: string) => { folderCalled = c; },
+    getGlobalMemory: () => "",
+    setGlobalMemory: () => { globalCalled = true; },
+  });
+  assert.match(result, /^Memory file updated \(\d+ bytes\)\./);
+  assert.equal(folderCalled, "f");
+  assert.equal(globalCalled, false);
+});
+
+test("update_memory (scope global) errors when no global memory store is supplied", async () => {
+  const result = await executeTool("update_memory", { content: "notes", scope: "global" }, {
+    getMemory: () => "",
+    setMemory: () => {},
+    // setGlobalMemory deliberately omitted
+  });
+  assert.equal(result, "Error: update_memory (scope \"global\") is not available in this context (no global memory store).");
+});
+
+test("update_memory (scope global) errors when ToolContext lacks setGlobalMemory entirely", async () => {
+  const result = await executeTool("update_memory", { content: "notes", scope: "global" });
+  assert.equal(result, "Error: update_memory (scope \"global\") is not available in this context (no global memory store).");
+});
+
+test("update_memory (scope global) reports the error message if setGlobalMemory throws", async () => {
+  const result = await executeTool("update_memory", { content: "notes", scope: "global" }, {
+    getMemory: () => "",
+    setMemory: () => {},
+    getGlobalMemory: () => "",
+    setGlobalMemory: () => {
+      throw new Error("disk full");
+    },
+  });
+  assert.match(result, /Error updating global memory: disk full/);
+});
+
+test("update_memory (scope global) reports the byte count for multi-byte content", async () => {
+  const content = "é"; // U+00E9 -> 2 bytes in UTF-8, 1 char
+  let captured = "<not called>";
+  const result = await executeTool("update_memory", { content, scope: "global" }, {
+    getMemory: () => "",
+    setMemory: () => {},
+    getGlobalMemory: () => "",
+    setGlobalMemory: (c: string) => { captured = c; },
+  });
+  assert.equal(result, `Global memory file updated (${Buffer.byteLength(content, "utf8")} bytes).`);
+  assert.equal(captured, content);
+});
+
+test("update_memory (scope global) allows an empty string (to clear global memory)", async () => {
+  let captured = "<not called>";
+  const result = await executeTool("update_memory", { content: "", scope: "global" }, {
+    getMemory: () => "",
+    setMemory: () => {},
+    getGlobalMemory: () => "old global notes",
+    setGlobalMemory: (c: string) => { captured = c; },
+  });
+  assert.match(result, /^Global memory file updated \(0 bytes\)\./);
+  assert.equal(captured, "");
+});

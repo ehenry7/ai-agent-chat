@@ -148,7 +148,13 @@ if (!fs.existsSync(path.join(ROOT, "out", "extension.js"))) {
 // ---- 4. package ------------------------------------------------------------
 
 log("Packaging vsix");
-run("npx", ["--yes", "@vscode/vsce", "package", "--allow-missing-repository"]);
+run("npx", ["--yes", "@vscode/vsce", "package", "--allow-missing-repository", "--no-dependencies"], {
+    env: {
+        VSCE_DISABLE_TELEMETRY: "1",
+        NODE_OPTIONS: "--no-deprecation"
+    }
+});
+log("Packaging vsix done");
 
 const vsixFiles = fs.readdirSync(ROOT).filter(function (f) { return f.endsWith(".vsix"); });
 if (vsixFiles.length === 0) {
@@ -156,8 +162,8 @@ if (vsixFiles.length === 0) {
 }
 
 vsixFiles.forEach(function (f) {
-  const kb = Math.round(fs.statSync(path.join(ROOT, f)).size / 1024 * 10) / 10;
-  console.log("\nPackaged: " + f + " (" + kb + " KB)");
+ const kb = Math.round(fs.statSync(path.join(ROOT, f)).size / 1024 * 10) / 10;
+ console.log("\nPackaged: " + f + " (" + kb + " KB)");
 });
 
 // ---- 5. optional install ---------------------------------------------------

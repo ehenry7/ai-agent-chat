@@ -1,10 +1,19 @@
 import * as vscode from "vscode";
+import * as path from "path";
+import * as fs from "fs";
 import { ChatViewProvider } from "./chatPanel";
 import { runAgent } from "./agent";
 import { ChatMessage, ApiClient } from "./apiClient";
 import { type ToolContext } from "./tools";
 import { parseMarkdownChecklist, type TodoItem } from "./tools/todos";
+import {
+    loadSession, saveSession, clearSession,
+    stripToPersistableHistory, SESSION_VERSION, type SessionState,
+    resolveContainedPath,
+    createFolderMemoryStore, createGlobalMemoryStore, type MemoryStore,
+} from "./persistence";
 import { showWelcomeScreen, registerSetupHandler } from "./welcome";
+import { processSlashCommand } from "./tools/commands/slash-commands";
 
 const MAX_HISTORY = 20;
 const SECRET_KEY = "aiAgentChat.apiKey";
@@ -101,6 +110,33 @@ export async function activate(context: vscode.ExtensionContext) {
     out.appendLine("[activate] baseUrl=" + initialConfig.baseUrl + " model=" + initialConfig.model +
         " apiKeyPresent=" + String(initialKey.length > 0));
 
+    // ---- Workspace root + persistent memory file name ----
+    // Both the session snapshot and the memory file live inside the workspace
+    // root; persistence.ts contains all the path-containment logic.
+    const wsRoot = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+        ? vscode.workspace.workspaceFolders[0].uri.fsPath
+        : process.cwd();
+    const getMemoryFile = (): string => {
+        const cfg = vscode.workspace.getConfiguration("aiAgentChat");
+        return (cfg.get<string>("memoryFile", "") || "").trim() || "AGENTS.md";
+    };
+
+    // ---- Global (cross-project) memory file name + storage directory ----
+    // Unlike the folder memory (which lives inside the workspace), the GLOBAL
+    // memory lives in the extension's machine-wide globalStorageUri, OUTSIDE
+    // any workspace, so it is shared across every project on this machine
+    // while each project keeps its own independent AGENTS.md. This is the
+    // isolation boundary the user asked for: one project's memory never
+    // leaks into another's. The file name is configurable via
+    // `aiAgentChat.globalMemoryFile` (default GLOBAL_AGENTS.md).
+    const getGlobalMemoryFile = (): string => {
+        const cfg = vscode.workspace.getConfiguration("aiAgentChat");
+        return (cfg.get<string>("globalMemoryFile", "") || "").trim() || "GLOBAL_AGENTS.md";
+    };
+    const globalMemoryDir = context.globalStorageUri
+        ? context.globalStorageUri.fsPath
+        : "";
+
     // ---- Conversation history & state ----
     const history: ChatMessage[] = [];
     // Session-level TODO list, surfaced to the model each turn via a reminder
@@ -108,6 +144,16 @@ export async function activate(context: vscode.ExtensionContext) {
     let todoList: TodoItem[] = [];
     let selectedModel = initialConfig.model;
     let currentRun: AbortController | undefined;
+    let activePromptResolver: ((value: string) => void) | undefined; 
+    let activePromptCallId: string | undefined;
+    // Disk-backed memory stores. Reads always hit disk (no cached snapshot), so
+    // AGENTS.md / GLOBAL_AGENTS.md written by ANY path — a manual edit, the
+    // /init slash command, or the update_memory tool — is picked up
+    // immediately by both the system-prompt injection and the /config command.
+    // Wiring the stores straight into the tool context (no adapter) keeps the
+    // update_memory tool's observable behavior unchanged.
+    const folderMemory: MemoryStore = createFolderMemoryStore(wsRoot, getMemoryFile);
+    const globalMemory: MemoryStore = createGlobalMemoryStore(globalMemoryDir, getGlobalMemoryFile);
 
     // ---- Provider ----
     const panel = new ChatViewProvider(context);
@@ -164,6 +210,52 @@ export async function activate(context: vscode.ExtensionContext) {
         out.appendLine("[activate] prompt state load failed: " + String(e));
     }
 
+    // ---- Restore the durable session + memory on startup ----
+    // The session snapshot (history/uiLog/todos/selectedModel) and the memory
+    // file both live inside the workspace. We load them here so a window
+    // reload/reopen resumes the conversation exactly where it left off. The
+    // recovered uiLog is replayed into the webview once it signals readiness
+    // (see the webviewReady handler), along with a small "restored" banner.
+    let restoredFromSession = false;
+    try {
+        const session = loadSession(wsRoot);
+        if (session) {
+            if (Array.isArray(session.history) && session.history.length > 0) {
+                history.push(...stripToPersistableHistory(session.history).slice(-MAX_HISTORY));
+            }
+            if (Array.isArray(session.uiLog) && session.uiLog.length > 0) {
+                uiLog.push(...session.uiLog);
+            }
+            todoList = Array.isArray(session.todoList) ? session.todoList : [];
+            if (session.selectedModel) {
+                selectedModel = session.selectedModel;
+            }
+            restoredFromSession = true;
+            out.appendLine("[activate] session restored: " + history.length + " history msgs, " +
+                uiLog.length + " uiLog entries, " + todoList.length + " todos");
+        } else {
+            out.appendLine("[activate] no session found (fresh start)");
+        }
+    } catch (e) {
+        out.appendLine("[activate] session restore failed: " + String(e));
+    }
+
+    // Eagerly read both memory scopes once at activation purely for the
+    // startup diagnostic log — the stores below are disk-backed and re-read on
+    // every access, so nothing is cached here. (Errors are non-fatal: get()
+    // itself returns "" for a missing file.)
+    try {
+        out.appendLine("[activate] memory loaded (" + Buffer.byteLength(folderMemory.get(), "utf8") + " bytes)");
+    } catch (e) {
+        out.appendLine("[activate] memory load failed: " + String(e));
+    }
+    try {
+        out.appendLine("[activate] global memory loaded (" + Buffer.byteLength(globalMemory.get(), "utf8") +
+            " bytes) from " + (globalMemoryDir || "<no global storage>"));
+    } catch (e) {
+        out.appendLine("[activate] global memory load failed: " + String(e));
+    }
+
     async function persistPromptState(): Promise<void> {
         try {
             await context.workspaceState.update(PROMPT_HISTORY_KEY, promptHistory.slice(-MAX_PROMPT_HISTORY));
@@ -171,6 +263,33 @@ export async function activate(context: vscode.ExtensionContext) {
             await context.workspaceState.update(INPUT_HEIGHT_KEY, inputHeight);
         } catch (e) {
             out.appendLine("[state] persist prompt state failed: " + String(e));
+        }
+    }
+
+    /**
+     * Snapshot the current conversation to the durable session file so it can be
+     * resumed after a window reload/reopen. Called after each agent run and
+     * after compaction. Only the API-replayable history is stored. Failures are
+     * logged but never throw — a failed save must not kill the chat.
+     */
+    function persistSessionNow(): void {
+        try {
+            const session: SessionState = {
+                version: SESSION_VERSION,
+                history: stripToPersistableHistory(history.slice(-MAX_HISTORY)),
+                uiLog: uiLog.slice(),
+                todoList: todoList.slice(),
+                selectedModel,
+                savedAt: Date.now(),
+            };
+            const ok = saveSession(wsRoot, session);
+            if (!ok) {
+                out.appendLine("[session] save returned false (oversized or write failed)");
+                recordAndPost("error", "Session too large to save. Compacting context automatically...");
+                compactHistory();
+            }
+        } catch (e) {
+            out.appendLine("[session] persist failed: " + String(e));
         }
     }
 
@@ -187,6 +306,65 @@ export async function activate(context: vscode.ExtensionContext) {
         if (promptHistory.length > MAX_PROMPT_HISTORY) {
             promptHistory = promptHistory.slice(-MAX_PROMPT_HISTORY);
         }
+    }
+
+    /**
+     * Expand `@path/to/file` mentions in a prompt by inlining the referenced
+     * file's contents. The chat bubble keeps the original `@path` text (what
+     * the user typed), but the model receives the expanded version so it can
+     * act on the file without an extra round-trip.
+     *
+     * Only workspace-relative paths that resolve inside the workspace root are
+     * inlined (resolveContainedPath rejects `../` escapes and absolute paths
+     * outside the root). A mention whose file can't be read is left as-is with
+     * a short note, so the model/user can see something went wrong.
+     *
+     * Mentions are tokenized greedily: `@` followed by run of non-space chars
+     * that don't include newlines. This matches what the webview inserts via
+     * insertFileRef() (`@path/to/file ` with a trailing space).
+     */
+    function expandFileMentions(prompt: string): string {
+        if (!prompt || prompt.indexOf("@") === -1) {
+            return prompt;
+        }
+        const mentionRe = /@([^\s@\n]+)/g;
+        let result = "";
+        let lastIndex = 0;
+        let match: RegExpExecArray | null;
+        let expandedAny = false;
+        while ((match = mentionRe.exec(prompt)) !== null) {
+            result += prompt.substring(lastIndex, match.index);
+            const relPath = match[1];
+            let abs: string;
+            try {
+                abs = resolveContainedPath(wsRoot, relPath);
+            } catch {
+                // Path escapes the workspace — leave the mention untouched.
+                result += match[0];
+                lastIndex = match.index + match[0].length;
+                continue;
+            }
+            try {
+                const content = fs.readFileSync(abs, "utf8");
+                // Cap inlined content so a huge file can't blow out the prompt;
+                // the agent can always read the full file with read_file.
+                const MAX_INLINE = 20000;
+                const trimmed = content.length > MAX_INLINE
+                    ? content.substring(0, MAX_INLINE) + "\n…[truncated; use read_file for the full file]"
+                    : content;
+                result += "File `" + relPath + "`:\n```\n" + trimmed + "\n```";
+                expandedAny = true;
+            } catch {
+                // Missing/unreadable file — keep the mention, add a note.
+                result += match[0] + " (could not read file)";
+            }
+            lastIndex = match.index + match[0].length;
+        }
+        if (!expandedAny) {
+            return prompt; // nothing to inline; return unchanged
+        }
+        result += prompt.substring(lastIndex);
+        return result;
     }
 
     // Register the setup message handler exactly once (not per welcome-screen show),
@@ -327,7 +505,45 @@ export async function activate(context: vscode.ExtensionContext) {
             out.appendLine("[compact] FAILED: " + String(err));
             recordAndPost("error", "Compact failed: " + String(err));
         }
+        // Compaction rewrote `history`; persist the compacted snapshot so a
+        // reload doesn't resurrect the pre-compaction messages.
+        persistSessionNow();
         panel.postMessage({ type: "done", text: "" });
+    }
+
+    /**
+     * Ask the user to confirm clearing the conversation using a native VS Code
+     * modal. Native window.confirm() is blocked inside the webview sandbox, so
+     * the webview delegates the confirmation here. Returns true on confirm.
+     */
+    async function confirmClearChat(): Promise<boolean> {
+        const choice = await vscode.window.showWarningMessage(
+            "Clear the conversation? This deletes the saved session and cannot be undone.",
+            { modal: true },
+            "Clear"
+        );
+        return choice === "Clear";
+    }
+
+    /**
+     * Clear the conversation and the durable session file. The long-term
+     * memory file (AGENTS.md) is intentionally kept: it holds the agent's
+     * cross-session understanding, not the current conversation. Used by both
+     * the webview 🗑️ button and the command-palette entry.
+     */
+    function clearChat(): void {
+        out.appendLine("[chat] clear chat requested");
+        history.length = 0;
+        uiLog.length = 0;
+        todoList = [];
+        restoredFromSession = false;
+        try {
+            clearSession(wsRoot);
+        } catch (e) {
+            out.appendLine("[session] clear failed: " + String(e));
+        }
+        // Tell the webview to drop its rendered bubbles and reset its UI state.
+        panel.postMessage({ type: "clearChat" });
     }
 
     panel.onMessage(async (msg: any) => {
@@ -347,6 +563,20 @@ export async function activate(context: vscode.ExtensionContext) {
             // 1) Replay the transcript so the view looks exactly as it was left.
             if (uiLog.length > 0) {
                 panel.postMessage({ type: "renderHistory", items: uiLog });
+                // 1b) When the transcript was recovered from the durable session
+                // (rather than just re-shown after a webview hide/show cycle),
+                // surface a short notice so the user knows it is a resumed chat.
+                if (restoredFromSession) {
+                    const ts = new Date().toLocaleTimeString();
+                    panel.postMessage({
+                        type: "tool",
+                        text: "restore → Resumed previous conversation from session (restored " +
+                            history.length + " message(s) and " + todoList.length + " todo item(s)) at " + ts +
+                            ". Folder memory: " + getMemoryFile() +
+                            ". Global memory: " + getGlobalMemoryFile()
+                    });
+                    restoredFromSession = false; // only banner once per restore
+                }
             }
             // 2) Restore the model dropdown instantly from the cached list.
             if (cachedModels.length > 0) {
@@ -384,6 +614,14 @@ export async function activate(context: vscode.ExtensionContext) {
         } else if (msg.type === "compact") {
             out.appendLine("[chat] compact requested by user");
             await compactHistory();
+        } else if (msg.type === "clearChat") {
+            // The webview cannot use window.confirm() (blocked by the sandbox),
+            // so it requests the clear and the host shows a native modal.
+            const ok = await confirmClearChat();
+            if (!ok) {
+                return;
+            }
+            clearChat();
         } else if (msg.type === "selectModel" && typeof msg.model === "string") {
             selectedModel = msg.model;
             out.appendLine("[chat] model selected: " + selectedModel);
@@ -391,6 +629,65 @@ export async function activate(context: vscode.ExtensionContext) {
             if (currentRun) {
                 out.appendLine("[chat] stop requested by user");
                 currentRun.abort();
+            }
+        } else if (msg.type === "requestOpenFiles") {
+            // Collect the workspace-relative paths of every open text editor
+            // tab so the webview's @-attach / [+] menu can offer them. Custom
+            // editors, notebooks, webviews, etc. are skipped (only
+            // TabInputText maps to a plain file URI we can safely mention).
+            const openFiles: string[] = [];
+            try {
+                for (const tabGroup of vscode.window.tabGroups.all) {
+                    for (const tab of tabGroup.tabs) {
+                        if (tab.input instanceof vscode.TabInputText) {
+                            const rel = path.relative(wsRoot, tab.input.uri.fsPath).replace(/\\/g, "/");
+                            // Only mention files inside the workspace, and
+                            // dedupe (the same file may be open in two groups).
+                            if (rel && !rel.startsWith("..") && !path.isAbsolute(rel) && !openFiles.includes(rel)) {
+                                openFiles.push(rel);
+                            }
+                        }
+                    }
+                }
+            } catch (e: any) {
+                out.appendLine("[files] collecting open files failed: " + String(e));
+            }
+            panel.postMessage({ type: "openFilesList", files: openFiles });
+        } else if (msg.type === "browseFile") {
+            // Launch VS Code's native open-file dialog, scoped to the workspace
+            // root, and turn the chosen file into a workspace-relative @path
+            // mention inserted into the prompt (files outside the workspace are
+            // offered as absolute paths so the user still gets something usable).
+            try {
+                const uris = await vscode.window.showOpenDialog({
+                    canSelectMany: false,
+                    openLabel: "Attach File",
+                    defaultUri: vscode.Uri.file(wsRoot),
+                });
+                if (uris && uris.length > 0) {
+                    const chosen = uris[0].fsPath;
+                    const rel = path.relative(wsRoot, chosen).replace(/\\/g, "/");
+                    const mention = (rel && !rel.startsWith("..") && !path.isAbsolute(rel))
+                        ? rel
+                        : chosen.replace(/\\/g, "/");
+                    panel.postMessage({ type: "insertFileMention", path: mention });
+                }
+            } catch (e: any) {
+                out.appendLine("[files] open dialog failed: " + String(e));
+            }
+        } else if (msg.type === "quickPickSelected" || msg.type === "inputBoxSubmitted") {
+            if (activePromptResolver && msg.callId === activePromptCallId) {
+                const resolver = activePromptResolver;
+                activePromptResolver = undefined;
+                activePromptCallId = undefined;
+                resolver(String(msg.value));
+            }
+        } else if (msg.type === "promptCancelled") {
+            if (activePromptResolver && msg.callId === activePromptCallId) {
+                const resolver = activePromptResolver;
+                activePromptResolver = undefined;
+                activePromptCallId = undefined;
+                resolver("Error: User cancelled the prompt.");
             }
         }
     });
@@ -409,6 +706,33 @@ export async function activate(context: vscode.ExtensionContext) {
         // on submit for instant availability; this is the authoritative copy).
         panel.postMessage({ type: "promptHistory", items: promptHistory });
         out.appendLine("[chat] user message: " + text.substring(0, 80) + " (model: " + selectedModel + ")");
+
+        // ---- LOCAL SLASH COMMAND INTERCEPTION ----
+        const slashCommandResult = await processSlashCommand(
+            text,
+            wsRoot,
+            folderMemory,
+            globalMemory,
+            panel,
+            recordAndPost,
+            out,
+            getMemoryFile,
+            getGlobalMemoryFile,
+            getEffectiveConfig,
+            globalMemoryDir
+        );
+
+        // Handle slash command result:
+        // - null: not a slash command, continue with agent
+        // - "DONE": instant command handled locally, exit early
+        // - other string: registry command, use modified text for agent
+        if (slashCommandResult === "DONE") {
+            return;
+        }
+        if (slashCommandResult !== null) {
+            text = slashCommandResult;
+        }
+        // ------------------------------------------
 
         let effConfig = await getEffectiveConfig(selectedModel);
 
@@ -434,7 +758,16 @@ export async function activate(context: vscode.ExtensionContext) {
                 onRetry: (info) => out.appendLine("[chat] attempt " + info.attempt + "/" + info.maxAttempts +
                     " failed (" + info.error + "); retrying in " + info.delayMs + " ms"),
             });
-            const userMsg: ChatMessage = { role: "user", content: text };
+            // Inline any @path/to/file mentions so the model sees the file
+            // contents directly. The chat bubble already shows the original
+            // text (pushed to uiLog above); only what's sent to the model is
+            // expanded. Slash-command output is left untouched by this (it has
+            // no @ mentions).
+            const expandedText = expandFileMentions(text);
+            if (expandedText !== text) {
+                out.appendLine("[chat] expanded @ file mentions in prompt");
+            }
+            const userMsg: ChatMessage = { role: "user", content: expandedText };
             const priorHistory = history.slice(-MAX_HISTORY);
             const cfgNow = vscode.workspace.getConfiguration("aiAgentChat");
             const rawMaxSteps = cfgNow.get<number>("maxSteps", 25);
@@ -464,6 +797,25 @@ export async function activate(context: vscode.ExtensionContext) {
                 },
                 getTodoList: () => todoList,
                 setTodoList: (t: TodoItem[]) => { todoList = t; },
+                // Wire the disk-backed stores straight in: get() reads disk,
+                // set() writes disk. No cached snapshot — external writes to
+                // AGENTS.md / GLOBAL_AGENTS.md are reflected on the next get().
+                getMemory: () => folderMemory.get(),
+                setMemory: (content: string) => {
+                    try {
+                        folderMemory.set(content);
+                    } catch (e: any) {
+                        out.appendLine("[memory] save failed: " + String(e));
+                    }
+                },
+                getGlobalMemory: () => globalMemory.get(),
+                setGlobalMemory: (content: string) => {
+                    try {
+                        globalMemory.set(content);
+                    } catch (e: any) {
+                        out.appendLine("[memory] global save failed: " + String(e));
+                    }
+                },
                 spawnSubTask: async (subMessage: string, subTodos?: string | null): Promise<string> => {
                     // Seed the child's todo list from the optional markdown checklist.
                     let childTodos: TodoItem[] = [];
@@ -477,10 +829,47 @@ export async function activate(context: vscode.ExtensionContext) {
                     const childContext: ToolContext = {
                         getTodoList: () => childTodos,
                         setTodoList: (t: TodoItem[]) => { childTodos = t; },
+                        // Sub-tasks share the parent's disk-backed workspace
+                        // memory: they read the accumulated understanding from
+                        // disk and contribute to it via the same store.
+                        getMemory: () => folderMemory.get(),
+                        setMemory: (content: string) => {
+                            try {
+                                folderMemory.set(content);
+                            } catch (e: any) {
+                                out.appendLine("[memory] save failed: " + String(e));
+                            }
+                        },
+                        // Sub-tasks also share the parent's GLOBAL (cross-project)
+                        // memory, so they can read and contribute to it too.
+                        getGlobalMemory: () => globalMemory.get(),
+                        setGlobalMemory: (content: string) => {
+                            try {
+                                globalMemory.set(content);
+                            } catch (e: any) {
+                                out.appendLine("[memory] global save failed: " + String(e));
+                            }
+                        },
                         compactContext: async () => "Sub-task context compaction is not available.",
+                        requestQuickPick: (placeHolder, options) => {
+                            return new Promise<string>((resolve) => {
+                                const callId = "qp_" + Math.random().toString(36).substring(2, 9);
+                                activePromptResolver = resolve;
+                                activePromptCallId = callId;
+                                panel.postMessage({ type: "showQuickPickCard", callId, placeHolder, options });
+                            });
+                        },
+                        requestInputBox: (prompt, placeHolder) => {
+                            return new Promise<string>((resolve) => {
+                                const callId = "ib_" + Math.random().toString(36).substring(2, 9);
+                                activePromptResolver = resolve;
+                                activePromptCallId = callId;
+                                panel.postMessage({ type: "showInputBoxCard", callId, prompt, placeHolder });
+                            });
+                        },
                     };
                     const subUser: ChatMessage = { role: "user", content: subMessage };
-                    const subMaxSteps = Math.max(1, Math.min(maxSteps, 15));
+                    const subMaxSteps = Math.max(1, maxSteps);
                     const subMessages = await runAgent(
                         client,
                         [],
@@ -504,6 +893,9 @@ export async function activate(context: vscode.ExtensionContext) {
             if (abortController.signal.aborted) {
                 recordAndPost("error", "Stopped by user.");
             }
+            // Snapshot the (possibly updated) history/uiLog/todos/memory to the
+            // durable session file so the conversation survives a reload.
+            persistSessionNow();
             panel.postMessage({ type: "done", text: "" });
             out.appendLine("[chat] agent run finished" + (abortController.signal.aborted ? " (stopped)" : ""));
         } catch (err: any) {
@@ -566,6 +958,17 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("aiAgentChat.diagnostics", () => {
             out.show(true);
             vscode.window.showInformationMessage("AI Agent Chat: diagnostics shown in output channel.");
+        })
+    );
+
+    // ---- Command: Clear Chat ----
+    context.subscriptions.push(
+        vscode.commands.registerCommand("aiAgentChat.clearChat", async () => {
+            const ok = await confirmClearChat();
+            if (!ok) {
+                return;
+            }
+            clearChat();
         })
     );
 

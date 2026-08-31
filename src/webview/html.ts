@@ -28,15 +28,11 @@ export function buildCsp(nonce: string, cspSource: string): string {
 }
 
 /**
- * Build the full HTML document. The three script parts are concatenated into a
- * SINGLE <script> block: shell first (it holds the "use strict" directive and
- * the shared element/state variables), then the markdown library, then message
- * rendering/dispatch. Function declarations hoist across the whole script, so
- * cross-part calls (e.g. send -> addMessage -> mdRender) work regardless.
+ * Build the full HTML document.
  */
 export function buildWebviewHtml(opts: WebviewHtmlOptions): string {
     const css = buildWebviewCss(opts.lightIconUri, opts.darkIconUri);
-     const script = [
+    const script = [
         buildWebviewScript(),
         buildHighlightScript(),
         buildMarkdownScript(),
@@ -54,6 +50,8 @@ export function buildWebviewHtml(opts: WebviewHtmlOptions): string {
     htmlParts.push("</style>");
     htmlParts.push("</head>");
     htmlParts.push("<body>");
+    
+    // Setup Overlay
     htmlParts.push('<div id="setupOverlay">');
     htmlParts.push('<h2 style="font-size: 14px; margin: 0 0 10px 0;">AI Agent Setup</h2>');
     htmlParts.push('<div class="s-field"><label>Base URL</label><input id="setupBaseUrl" type="text" value="http://techdev.hicomputing.huawei.com:18000" /></div>');
@@ -65,29 +63,48 @@ export function buildWebviewHtml(opts: WebviewHtmlOptions): string {
     htmlParts.push('<div class="s-field"><label>Max Steps</label><input id="setupMaxSteps" type="number" min="1" max="500" value="25" /></div>');
     htmlParts.push('<button id="setupSaveBtn" class="s-btn" disabled>Save & Close</button>');
     htmlParts.push('</div>');
-    htmlParts.push('<div id="modelHeader">');
-    htmlParts.push('<div class="my-theme-icon" style="margin-right: 6px;"></div>');
-    htmlParts.push('<label for="modelSelect">Model:</label>');
-    htmlParts.push('<select id="modelSelect"><option value="">(Loading models...)</option></select>');
-    htmlParts.push('<button id="refreshModels" title="Refresh available models from server">🔄</button>');
-    htmlParts.push('<button id="timeModels" title="Measure response time of each model">⏱</button>');
-    htmlParts.push('<button id="compactBtn" title="Compact conversation context (summarize history to save tokens)">🗜️</button>');
-    htmlParts.push('<button id="settingsBtn" title="Open Setup / Settings">⚙️</button>');
-    htmlParts.push('</div>');
-    htmlParts.push('<div id="status" class="st">BOOT: script not running yet</div>');
+
+    // Messages area
     htmlParts.push('<div id="messages"></div>');
+    
+    // Debug log
     htmlParts.push('<div id="debugWrap" class="collapsed">');
     htmlParts.push('<div id="debugToggle">▸ debug log</div>');
     htmlParts.push('<div id="debug"><div class="dbg">[debug log - will fill if script runs]</div></div>');
     htmlParts.push('</div>');
-    htmlParts.push('<div id="inputArea">');
-    htmlParts.push('<div id="inputGrip" title="Drag to resize input box"></div>');
-    htmlParts.push('<textarea id="input" rows="2" placeholder="Ask the agent... (↑/↓ history)"></textarea>');
+    
+    // Input area container
+    htmlParts.push('<div id="inputAreaContainer">');
+    htmlParts.push('<div id="status" class="st">BOOT: script not running yet</div>');
+    htmlParts.push('<div id="inputGrip" title="Drag to resize prompt area"></div>');
+
+    // Quick File Attachment popup (for @ and +). Populated by script.ts on
+    // demand; hidden until the user types '@' or clicks the [+] button.
+    htmlParts.push('<div id="fileAttachMenu" style="display:none;"></div>');
+
+    htmlParts.push('<textarea id="input" rows="2" placeholder="Ask the agent... (@ to attach file, / for commands)"></textarea>');
+
+    htmlParts.push('<div id="promptToolbar">');
+    htmlParts.push('<button id="addFileBtn" title="Attach open file or browse...">+</button>');
+    htmlParts.push('<select id="modelSelect" title="Select AI Model"><option value="">(Loading models...)</option></select>');
+    htmlParts.push('<select id="actionMenu" title="More Actions">');
+    htmlParts.push('<option value="">☰ Menu</option>');
+    htmlParts.push('<option value="refresh">🔄 Refresh Models</option>');
+    htmlParts.push('<option value="time">⏱ Benchmark Models</option>');
+    htmlParts.push('<option value="compact">🗜️ Compact Context</option>');
+    htmlParts.push('<option value="clear">🗑️ Clear Chat</option>');
+    htmlParts.push('<option value="settings">⚙️ Settings</option>');
+    htmlParts.push('</select>');
+    htmlParts.push('<div class="spacer"></div>');
+    
     htmlParts.push('<div id="sendStopStack">');
-    htmlParts.push('<button id="send" title="Send message (Enter)">\u27A4</button>');
-    htmlParts.push('<button id="stop" disabled title="Stop the current agent run">\u25A0</button>');
+    htmlParts.push('<button id="send" title="Send message (Enter)">➤</button>');
+    htmlParts.push('<button id="stop" disabled title="Stop the current agent run">■</button>');
     htmlParts.push('</div>');
-    htmlParts.push("</div>");
+    htmlParts.push('</div>');
+    htmlParts.push('</div>');
+
+    // Script injection
     htmlParts.push('<script nonce="' + opts.nonce + '">');
     htmlParts.push(script);
     htmlParts.push("</script>");

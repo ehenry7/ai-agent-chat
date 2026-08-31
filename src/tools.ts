@@ -343,7 +343,7 @@ export const tools = [
     type: "function",
     function: {
       name: "show_quick_pick",
-      description: "Ask the user to choose one option from a list, shown as a VS Code Quick Pick",
+      description: "Ask the user to choose one option from a list, rendered inline in the chat window",
       parameters: {
         type: "object",
         properties: {
@@ -358,7 +358,7 @@ export const tools = [
     type: "function",
     function: {
       name: "show_input_box",
-      description: "Ask the user to type a free-text answer via a VS Code input box",
+      description: "Ask the user to type a free-text answer, rendered inline in the chat window",
       parameters: {
         type: "object",
         properties: {
@@ -505,22 +505,6 @@ export const tools = [
   {
     type: "function",
     function: {
-      name: "run_slash_command",
-      description:
-        "Execute a slash command to get specific instructions or content. Slash commands are predefined templates (built-in, global, or project-scoped) that provide detailed guidance for common tasks. The command's content is returned as the tool result and injected into the conversation for you to act on.",
-      parameters: {
-        type: "object",
-        properties: {
-          command: { type: "string", description: "Name of the slash command to run (e.g. init)." },
-          args: { type: "string", description: "Optional additional context or arguments for the command." },
-        },
-        required: ["command"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
       name: "new_task",
       description:
         "Create a new sub-agent task with your provided message and optional initial todo list. Use this to delegate a self-contained subtask and receive the sub-agent's result. CRITICAL: this tool MUST be called alone - do NOT call it alongside other tools in the same turn.",
@@ -532,6 +516,94 @@ export const tools = [
           todos: { type: "string", description: "Optional initial todo list as a markdown checklist." },
         },
         required: ["mode", "message"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_memory",
+      description:
+        "Replace the entire contents of one of your persistent memory files with the given markdown content. " +
+        "There are TWO scopes:\n" +
+        "- scope \"folder\" (default): the per-workspace memory file (AGENTS.md by default), holding notes specific to the " +
+        "current project only. Use this for project-specific facts, file/task layouts, decisions, and gotchas so they stay " +
+        "isolated to this workspace and never leak into other projects.\n" +
+        "- scope \"global\": the cross-project memory file (shared across EVERY project on this machine, kept outside any " +
+        "workspace). Use this ONLY for things that are NOT specific to a single project: general conventions, tooling " +
+        "preferences, recurring gotchas, and your own working style.\n" +
+        "The chosen file is loaded on startup and injected into your system prompt every turn. Always provide the FULL new " +
+        "contents (the file is overwritten). Keep it concise and current. Use it freely whenever you discover something " +
+        "non-obvious or finish a meaningful piece of work.",
+      parameters: {
+        type: "object",
+        properties: {
+          content: {
+            type: "string",
+            description:
+              "The full new markdown contents of the memory file. This replaces whatever is there now.",
+          },
+          scope: {
+            type: "string",
+            enum: ["folder", "global"],
+            description:
+              "Which memory to update: \"folder\" (default) for the current project's AGENTS.md, or \"global\" for the " +
+              "cross-project memory shared across all workspaces on this machine. Project-specific notes go in \"folder\"; " +
+              "only genuinely cross-project notes go in \"global\".",
+          },
+        },
+        required: ["content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_plan",
+      description: "Update your current active plan in the system's state. Use this to track progress or pivot your strategy during complex tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          current_step: { type: "number", description: "The current step number you are on." },
+          status: { type: "string", description: "A brief status update of what was just accomplished." },
+          updated_plan: { type: "string", description: "The complete, revised plan text (keep it formatted as a numbered list)." },
+        },
+        required: ["current_step", "updated_plan"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "request_phase_change",
+      description: "Switch between 'discovery' phase (read-only tools) and 'execution' phase (unlocks mutating tools like write_file, edit_file, and run_command). Call this once you fully understand the workspace and are ready to make changes.",
+      parameters: {
+        type: "object",
+        properties: {
+          target_phase: { type: "string", enum: ["discovery", "execution"], description: "The phase to switch to." },
+        },
+        required: ["target_phase"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_slash_command",
+      description: "Execute a slash command to get specific instructions, information, or analysis. Slash commands are predefined templates that provide detailed guidance for common tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: {
+            type: "string",
+            description: "Name of the slash command (e.g., 'help', 'status', 'analyze', 'diagnostics')"
+          },
+          args: {
+            type: "string",
+            description: "Optional arguments to pass to the command (e.g., 'staged' for git-status)"
+          }
+        },
+        required: ["command"]
       },
     },
   },
@@ -550,6 +622,18 @@ export interface ToolContext {
    * Wired by extension.ts to a nested runAgent call.
    */
   spawnSubTask?: (message: string, todos?: string | null) => Promise<string>;
+  /** Read the agent's current persistent FOLDER memory (the AGENTS.md contents). */
+  getMemory?: () => string;
+  /** Replace the agent's persistent FOLDER memory (writes the AGENTS.md file). */
+  setMemory?: (content: string) => void;
+  /** Read the agent's current GLOBAL (cross-project) memory contents. */
+  getGlobalMemory?: () => string;
+  /** Replace the agent's GLOBAL memory (writes the machine-wide memory file). */
+  setGlobalMemory?: (content: string) => void;
+  /** Ask the user to select one value from a predefined list of options. */
+  requestQuickPick?: (placeHolder: string, options: string[]) => Promise<string>;
+  /** Ask the user to provide a free-form text value. */
+  requestInputBox?: (prompt: string, placeHolder: string) => Promise<string>;
 }
 
 /** Pure path-containment check, exported for unit testing (no vscode dependency). */
@@ -783,6 +867,45 @@ export function applyTextEdits(text: string, edits: TextEditLike[]): string {
   return result;
 }
 
+/**
+ * Per-tool output budget (in characters). Data-heavy tools (`read_file`,
+ * `list_directory`, `find_files`, `git_diff`) return raw file/directory/diff
+ * contents that can be far larger than the context window can afford in a
+ * single turn. ~12k chars is roughly 3k tokens — large enough to convey a
+ * meaningful chunk, small enough to keep one tool call from dominating the
+ * prompt. Exported for unit testing.
+ */
+export const MAX_TOOL_OUTPUT_CHARS = 12000;
+
+/** Notice appended to a truncated tool result, pointing the agent at finer-grained tools. */
+const TOOL_TRUNCATION_NOTICE =
+  "\n... [Output truncated at 12k chars. Use read_file_lines or targeted search to view specific sections.]";
+
+/**
+ * Caps a tool's string output at {@link MAX_TOOL_OUTPUT_CHARS} characters,
+ * appending a notice that points the agent at `read_file_lines` / targeted
+ * search when the result is too large to fit comfortably in the context
+ * window. Short outputs are returned unchanged. Pure, exported for testing.
+ *
+ * This is the "Per-Tool Truncation Budget": a first line of defense applied at
+ * the source (in {@link executeTool}) so a single giant read/list/diff never
+ * swamps the prompt. It complements the Semantic Sliding Window in agent.ts,
+ * which later compresses *old* tool messages once they age out of the recent
+ * window.
+ */
+export function truncateToolOutput(
+  output: string,
+  maxChars: number = MAX_TOOL_OUTPUT_CHARS,
+): string {
+  if (typeof output !== "string") {
+    return output;
+  }
+  if (output.length <= maxChars) {
+    return output;
+  }
+  return output.slice(0, maxChars) + TOOL_TRUNCATION_NOTICE;
+}
+
 /** Exported for unit/integration testing of file, git, and shell tool behavior. */
 export async function executeTool(name: string, args: any, ctx?: ToolContext): Promise<string> {
   try {
@@ -829,7 +952,7 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
         }
       } case "read_file": {
         const abs = resolveInWorkspace(String(args.path));
-        return fs.readFileSync(abs, "utf8");
+        return truncateToolOutput(fs.readFileSync(abs, "utf8"));
       }
       case "read_file_lines": {
         const abs = resolveInWorkspace(String(args.path));
@@ -884,10 +1007,11 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
         const relPath = args.path ? String(args.path) : ".";
         const abs = resolveInWorkspace(relPath);
         const entries = fs.readdirSync(abs, { withFileTypes: true });
-        return entries
+        const listing = entries
           .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
           .sort()
           .join("\n") || "(empty directory)";
+        return truncateToolOutput(listing);
       }
       case "find_files": {
         const glob = args.glob ? String(args.glob) : "**/*";
@@ -898,15 +1022,26 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
         const rels = files
           .map((f) => path.relative(root, f.fsPath).split(path.sep).join("/"))
           .sort();
-        return rels.length > 0 ? rels.join("\n") : "No files found";
+        return truncateToolOutput(rels.length > 0 ? rels.join("\n") : "No files found");
       }
       case "search_in_files": {
         const query = String(args.query ?? "");
         if (!query) {
           return "Error: query is required";
         }
-        const isRegex = Boolean(args.isRegex);
-        const pattern = isRegex ? new RegExp(query, "i") : null;
+        let pattern: RegExp | null = null;
+        if (Boolean(args.isRegex)) {
+          try {
+            pattern = new RegExp(query, "i");
+          } catch (e: any) {
+            return `Error: Invalid regular expression - ${e.message}`;
+          }
+        } else {
+          pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+        }
+        if (!pattern) {
+          return "Error: Failed to create search pattern";
+        }
         const glob = args.glob ? String(args.glob) : "**/*";
         const files = await vscode.workspace.findFiles(glob, "**/node_modules/**", 500);
         const results: string[] = [];
@@ -924,7 +1059,7 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
           const relPath = path.relative(workspaceRoot().fsPath, file.fsPath);
           const lines = text.split("\n");
           for (let i = 0; i < lines.length && results.length < MAX_MATCHES; i++) {
-            const matches = pattern ? pattern.test(lines[i]) : lines[i].toLowerCase().includes(query.toLowerCase());
+            const matches = pattern.test(lines[i]);
             if (matches) {
               results.push(`${relPath}:${i + 1}: ${lines[i].trim()}`);
             }
@@ -1066,7 +1201,7 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
           staged: Boolean(args.staged),
           ref: args.ref ? String(args.ref) : undefined,
         });
-        return await runGit(gitArgs);
+        return truncateToolOutput(await runGit(gitArgs));
       }
       case "git_log": {
         const count = args.count ? Number(args.count) : 10;
@@ -1098,23 +1233,6 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
         }
         const count = Math.min(Math.max(Number(args.count) || 5, 1), 10);
         return await webSearch(query, count);
-      }
-      case "show_quick_pick": {
-        const options: string[] = Array.isArray(args.options) ? args.options.map(String) : [];
-        if (options.length === 0) {
-          return "Error: options is required";
-        }
-        const choice = await vscode.window.showQuickPick(options, {
-          placeHolder: args.placeHolder ? String(args.placeHolder) : undefined,
-        });
-        return choice === undefined ? "User dismissed the picker without choosing." : choice;
-      }
-      case "show_input_box": {
-        const value = await vscode.window.showInputBox({
-          prompt: args.prompt ? String(args.prompt) : undefined,
-          placeHolder: args.placeHolder ? String(args.placeHolder) : undefined,
-        });
-        return value === undefined ? "User dismissed the input box without answering." : value;
       }
       case "open_file_in_editor": {
         const abs = resolveInWorkspace(String(args.path));
@@ -1344,43 +1462,6 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
         fs.writeFileSync(abs, newContent, "utf8");
         return `Replaced 1 occurrence in ${relPath}`;
       }
-      case "run_slash_command": {
-        const cmdName = String(args.command ?? "");
-        if (!cmdName) {
-          return "Error: command is required";
-        }
-        const cmdArgs = args.args != null ? String(args.args) : undefined;
-        const cwd = workspaceRoot().fsPath;
-        let command;
-        try {
-          command = await getCommand(cwd, cmdName);
-        } catch (e: any) {
-          return `Error loading command '${cmdName}': ${e?.message ?? String(e)}`;
-        }
-        if (!command) {
-          let names: string[] = [];
-          try {
-            names = await getCommandNames(cwd);
-          } catch {
-            names = [];
-          }
-          return `Command '${cmdName}' not found. Available commands: ${names.length ? names.join(", ") : "(none)"}`;
-        }
-        const lines = [`Command: /${command.name}`];
-        if (command.description) {
-          lines.push(`Description: ${command.description}`);
-        }
-        if (command.argumentHint) {
-          lines.push(`Argument hint: ${command.argumentHint}`);
-        }
-        if (cmdArgs) {
-          lines.push(`Provided arguments: ${cmdArgs}`);
-        }
-        lines.push(`Source: ${command.source}`);
-        lines.push("--- Command Content ---");
-        lines.push(command.content);
-        return lines.join("\n");
-      }
       case "new_task": {
         const mode = String(args.mode ?? "");
         const message = String(args.message ?? "");
@@ -1400,6 +1481,84 @@ export async function executeTool(name: string, args: any, ctx?: ToolContext): P
         } catch (e: any) {
           return `Error spawning sub-task: ${e?.message ?? String(e)}`;
         }
+      }
+      case "update_memory": {
+        const content = String(args.content ?? "");
+        // Allow an empty string (the model may want to clear its notes), but
+        // require the field to be present.
+        if (args.content === undefined || args.content === null) {
+          return "Error: content is required";
+        }
+        // scope defaults to "folder" (per-workspace). "global" targets the
+        // cross-project memory shared across every workspace on the machine.
+        const rawScope = args.scope === undefined || args.scope === null ? "" : String(args.scope);
+        const scope = rawScope.trim().toLowerCase() === "global" ? "global" : "folder";
+        if (scope === "global") {
+          if (!ctx?.setGlobalMemory) {
+            return "Error: update_memory (scope \"global\") is not available in this context (no global memory store).";
+          }
+          try {
+            ctx.setGlobalMemory(content);
+            const bytes = Buffer.byteLength(content, "utf8");
+            return `Global memory file updated (${bytes} bytes).`;
+          } catch (e: any) {
+            return `Error updating global memory: ${e?.message ?? String(e)}`;
+          }
+        }
+        if (!ctx?.setMemory) {
+          return "Error: update_memory is not available in this context (no memory store).";
+        }
+        try {
+          ctx.setMemory(content);
+          const bytes = Buffer.byteLength(content, "utf8");
+          return `Memory file updated (${bytes} bytes).`;
+        } catch (e: any) {
+          return `Error updating memory: ${e?.message ?? String(e)}`;
+        }
+      }
+      case "show_quick_pick": {
+        const options = Array.isArray(args.options) ? args.options.map(String) : [];
+        const placeHolder = String(args.placeHolder || "Select an option:");
+        if (options.length === 0) {
+          return "Error: No options provided to show_quick_pick.";
+        }
+        if (!ctx?.requestQuickPick) {
+          return "Error: Interactive in-chat quick pick handler not configured.";
+        }
+        return await ctx.requestQuickPick(placeHolder, options);
+      }
+      case "show_input_box": {
+        const prompt = String(args.prompt || "Enter value:");
+        const placeHolder = String(args.placeHolder || "");
+        if (!ctx?.requestInputBox) {
+          return "Error: Interactive in-chat input box handler not configured.";
+        }
+        return await ctx.requestInputBox(prompt, placeHolder);
+      }
+      case "run_slash_command": {
+        const cmdName = String(args.command || "").toLowerCase();
+        const cmdArgs = args.args ? String(args.args) : undefined;
+        
+        if (!cmdName) {
+          return "Error: No command name provided.";
+        }
+        
+        // Lookup command in registry (project > global > built-in)
+        const wsRoot = workspaceRoot().fsPath;
+        const command = await getCommand(wsRoot, cmdName);
+        if (!command) {
+          const available = await getCommandNames(wsRoot);
+          return `Command \`/${cmdName}\` not found.\n\nAvailable commands: ${available.map((c) => `\`${c}\``).join(", ")}`;
+        }
+        
+        // Build prompt text with command content
+        let promptText = `Execute slash command /${command.name}:\n\n${command.content}`;
+        if (cmdArgs) {
+          promptText += `\n\nArguments provided:\n${cmdArgs}`;
+        }
+        
+        // Return command content as tool result
+        return promptText;
       }
       default:
         return `Unknown tool: ${name}`;

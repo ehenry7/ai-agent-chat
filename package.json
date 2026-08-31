@@ -2,7 +2,7 @@
   "name": "ai-agent-chat",
   "displayName": "AI Chat",
   "description": "Agentic AI chat for OpenAI-compatible APIs with file and shell tools. No runtime dependencies; TLS verification enabled. Remote-SSH ready.",
-  "version": "0.30.4",
+  "version": "0.32.0",
   "publisher": "Huawei",
   "engines": {
     "vscode": "^1.85.0"
@@ -56,6 +56,10 @@
       {
         "command": "aiAgentChat.diagnostics",
         "title": "AI Agent Chat: Show Diagnostics"
+      },
+      {
+        "command": "aiAgentChat.clearChat",
+        "title": "AI Agent Chat: Clear Chat"
       }
     ],
     "configuration": {
@@ -91,6 +95,18 @@
           "minimum": 2,
           "maximum": 500,
           "description": "Maximum number of agent loop steps (model calls) per chat turn before the agent stops itself.",
+          "scope": "resource"
+        },
+        "aiAgentChat.memoryFile": {
+          "type": "string",
+          "default": "AGENTS.md",
+          "description": "Name of the markdown file (workspace-relative) where the agent keeps its persistent internal understanding for THIS workspace only (folder-scoped memory). Loaded on startup, injected into the system prompt, and kept up to date during a run via the update_memory tool (scope \"folder\"). Must stay inside the workspace. Project-specific notes belong here so they stay isolated per project.",
+          "scope": "resource"
+        },
+        "aiAgentChat.globalMemoryFile": {
+          "type": "string",
+          "default": "GLOBAL_AGENTS.md",
+          "description": "Name of the markdown file (in the extension's global storage, outside any workspace) where the agent keeps its GLOBAL (cross-project) memory, shared across every project on this machine. Loaded on startup, injected into the system prompt, and updated via the update_memory tool with scope \"global\". Use it only for things not specific to a single project (general conventions, tooling preferences, recurring gotchas).",
           "scope": "resource"
         }
       }

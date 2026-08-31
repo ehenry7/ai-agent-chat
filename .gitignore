@@ -30,3 +30,10 @@ Desktop.ini
 .env.*
 *.local
 project-bundle*
+
+# --- AI Agent Chat runtime state ---
+# The session snapshot (conversation history) is per-machine runtime state;
+# it is regenerated locally and should not be shared/committed.
+# NOTE: the agent's memory file (AGENTS.md by default) is intentionally NOT
+# ignored — it holds shared cross-session understanding you may want in VCS.
+.ai-agent-chat/

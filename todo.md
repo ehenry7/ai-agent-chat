@@ -459,13 +459,13 @@ command:**
 
 | Name | Description | Content |
 |---|---|---|
-| `init` | "Analyze codebase and create concise AGENTS.md files for AI assistants" | A large `<task>…<initialization>…<analysis_workflow>…<output_structure>…<quality_criteria>` prompt template that drives the agent to: discover existing `AGENTS.md` / `.roo/rules-{code,debug,ask,architect}/AGENTS.md` / `.cursorrules` / `CLAUDE.md` / `.github/copilot-instructions.md`; identify the stack; extract build/lint/test commands (especially single-test); map core architecture; document **non-obvious, project-specific** patterns only; and write/update a concise `AGENTS.md` (+ mode-specific files). It explicitly instructs using `update_todo_list` to track the analysis steps. |
+| `init` | "Analyze codebase and create concise AGENTS.md files for AI assistants" | A large `<task>…<initialization>…<analysis_workflow>…<output_structure>…<quality_criteria>` prompt template that drives the agent to: discover existing `AGENTS.md` / `rules-{code,debug,ask,architect}/AGENTS.md` / `.cursorrules` / `CLAUDE.md` / `.github/copilot-instructions.md`; identify the stack; extract build/lint/test commands (especially single-test); map core architecture; document **non-obvious, project-specific** patterns only; and write/update a concise `AGENTS.md` (+ mode-specific files). It explicitly instructs using `update_todo_list` to track the analysis steps. |
 
 Helpers: `getBuiltInCommands()`, `getBuiltInCommand(name)`, `getBuiltInCommandNames()` — each returns
 `Command` objects with `source: "built-in"` and `filePath: "<built-in:name>"`.
 
 > **Full command list at runtime** = built-in `init` **+** any `*.md` files the user places in
-> `<globalCommandsDir>/commands/` (global) or `<projectDir>/.roo/commands/` (project). Project
+> `<globalCommandsDir>/commands/` (global) or `<projectDir>/commands/` (project). Project
 > commands override global, which override built-in.
 
 ### Porting notes for our codebase

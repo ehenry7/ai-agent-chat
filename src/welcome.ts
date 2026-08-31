@@ -50,7 +50,7 @@ export function registerSetupHandler(context: vscode.ExtensionContext, panel: Ch
             await cfg.update("baseUrl", msg.baseUrl, vscode.ConfigurationTarget.Global);
             await cfg.update("model", msg.model, vscode.ConfigurationTarget.Global);
             const rawMaxSteps = Number(msg.maxSteps);
-            const maxSteps = Number.isFinite(rawMaxSteps) ? Math.min(50, Math.max(1, rawMaxSteps)) : DEFAULT_MAX_STEPS;
+            const maxSteps = Number.isFinite(rawMaxSteps) ? Math.min(500, Math.max(1, rawMaxSteps)) : DEFAULT_MAX_STEPS;
             await cfg.update("maxSteps", maxSteps, vscode.ConfigurationTarget.Global);
 
             if (msg.authType === "env") {
