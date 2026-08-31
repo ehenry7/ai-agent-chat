@@ -37,3 +37,6 @@ project-bundle*
 # NOTE: the agent's memory file (AGENTS.md by default) is intentionally NOT
 # ignored — it holds shared cross-session understanding you may want in VCS.
 .ai-agent-chat/
+*.txt
+docs/
+AGENTS.md
